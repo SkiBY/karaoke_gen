@@ -1,0 +1,21 @@
+services:
+  karaoke-gen:
+    build: .
+    ports:
+      - "8021:8000"
+    volumes:
+      - ./work:/app/work          # job outputs
+      - model-cache:/root/.cache  # whisper + demucs model weights
+    environment:
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cuda}
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  model-cache:

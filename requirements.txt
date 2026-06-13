@@ -1,0 +1,12 @@
+fastapi>=0.115
+syncedlyrics>=1.0
+lyricsgenius>=3.0
+uvicorn[standard]>=0.32
+python-multipart>=0.0.12
+aiofiles>=24.1
+faster-whisper>=1.0
+yt-dlp>=2025.1
+# demucs requires PyTorch — install separately or via:
+#   pip install demucs
+# ffmpeg must be installed on the system (apt install ffmpeg)
+demucs>=4.0

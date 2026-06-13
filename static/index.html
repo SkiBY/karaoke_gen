@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Karaoke Generator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d0d1a;
+      --surface:  #13132b;
+      --border:   #2a2a50;
+      --accent1:  #c45aff;
+      --accent2:  #ff5acd;
+      --text:     #e8e8ff;
+      --muted:    #7070a0;
+      --green:    #3dffc0;
+      --red:      #ff5a5a;
+      --gold:     #ffd700;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem 4rem;
+    }
+
+    /* ── Header ── */
+    header { text-align: center; margin-bottom: 2.5rem; }
+    header h1 {
+      font-size: 2.6rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent1), var(--accent2), var(--gold));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -1px;
+    }
+    header p { color: var(--muted); margin-top: .4rem; font-size: .95rem; }
+
+    /* ── Card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      width: 100%;
+      max-width: 640px;
+    }
+
+    /* ── Tabs ── */
+    .tabs { display: flex; gap: .5rem; margin-bottom: 1.5rem; }
+    .tab {
+      flex: 1;
+      padding: .6rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: .95rem;
+      transition: all .2s;
+    }
+    .tab.active {
+      border-color: var(--accent1);
+      color: var(--text);
+      background: rgba(196,90,255,.12);
+    }
+
+    /* ── Drop zone ── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 2.5rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--accent1);
+      background: rgba(196,90,255,.07);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%;
+    }
+    .drop-zone .icon { font-size: 2.5rem; margin-bottom: .5rem; }
+    .drop-zone .hint { color: var(--muted); font-size: .9rem; margin-top: .3rem; }
+    .drop-zone .filename { color: var(--accent1); font-size: .9rem; margin-top: .5rem; font-weight: 600; }
+
+    /* ── URL input ── */
+    .url-wrap { display: none; flex-direction: column; gap: .5rem; }
+    .url-wrap.visible { display: flex; }
+    .url-wrap label { font-size: .85rem; color: var(--muted); }
+    .url-wrap input {
+      background: #0d0d1a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: .7rem 1rem;
+      font-size: .95rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .url-wrap input:focus { border-color: var(--accent1); }
+    .url-wrap input::placeholder { color: var(--muted); }
+
+    /* ── Model selector ── */
+    .option-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 1.2rem;
+    }
+    .option-row label { color: var(--muted); font-size: .85rem; white-space: nowrap; }
+    .option-row select {
+      flex: 1;
+      background: #0d0d1a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: .5rem .75rem;
+      font-size: .9rem;
+      outline: none;
+      cursor: pointer;
+      transition: border-color .2s;
+    }
+    .option-row select:focus { border-color: var(--accent1); }
+
+    /* ── Submit button ── */
+    .btn-generate {
+      width: 100%;
+      margin-top: 1.5rem;
+      padding: .85rem;
+      border-radius: 10px;
+      border: none;
+      background: linear-gradient(135deg, var(--accent1), var(--accent2));
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: .5px;
+      transition: opacity .2s, transform .1s;
+    }
+    .btn-generate:hover { opacity: .9; transform: translateY(-1px); }
+    .btn-generate:active { transform: translateY(0); }
+    .btn-generate:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+    /* ── Progress ── */
+    #progress-section { display: none; }
+    .steps { display: flex; flex-direction: column; gap: .75rem; margin-bottom: 1.5rem; }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: .8rem;
+      padding: .65rem 1rem;
+      border-radius: 8px;
+      background: rgba(255,255,255,.03);
+      border: 1px solid transparent;
+      font-size: .9rem;
+      color: var(--muted);
+      transition: all .3s;
+    }
+    .step.active {
+      border-color: var(--accent1);
+      color: var(--text);
+      background: rgba(196,90,255,.08);
+    }
+    .step.done { border-color: var(--green); color: var(--green); background: rgba(61,255,192,.06); }
+    .step.error { border-color: var(--red); color: var(--red); background: rgba(255,90,90,.06); }
+    .step-icon { font-size: 1.1rem; width: 1.4rem; text-align: center; flex-shrink: 0; }
+
+    /* Spinner */
+    .spinner {
+      width: 1.1rem; height: 1.1rem;
+      border: 2px solid rgba(196,90,255,.3);
+      border-top-color: var(--accent1);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Progress bar ── */
+    .progress-bar-wrap {
+      background: rgba(255,255,255,.06);
+      border-radius: 8px;
+      height: 6px;
+      overflow: hidden;
+      margin-bottom: 1rem;
+    }
+    .progress-bar {
+      height: 100%;
+      border-radius: 8px;
+      background: linear-gradient(90deg, var(--accent1), var(--accent2));
+      transition: width .5s ease;
+      width: 0%;
+    }
+
+    /* ── Step current label ── */
+    .current-step-label {
+      text-align: center;
+      color: var(--muted);
+      font-size: .85rem;
+      min-height: 1.2em;
+      margin-bottom: .5rem;
+    }
+
+    /* ── Lyrics badge ── */
+    .lyrics-badge {
+      display: none;
+      text-align: center;
+      font-size: .78rem;
+      color: var(--green);
+      margin-bottom: .75rem;
+    }
+    .lyrics-badge.visible { display: block; }
+
+    /* ── Results ── */
+    #results-section { display: none; margin-top: 1.5rem; }
+    .results-title {
+      text-align: center;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--green);
+      margin-bottom: 1rem;
+    }
+    .download-btns { display: flex; gap: .75rem; flex-wrap: wrap; }
+    .btn-dl {
+      flex: 1;
+      min-width: 140px;
+      padding: .75rem 1rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0d0d1a;
+      color: var(--text);
+      font-size: .9rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      transition: border-color .2s, background .2s;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: .4rem;
+    }
+    .btn-dl:hover { border-color: var(--accent1); background: rgba(196,90,255,.1); }
+    .btn-dl.dl-ass { border-color: rgba(196,90,255,.5); }
+    .btn-dl.dl-minus { border-color: rgba(253,215,0,.4); color: var(--gold); }
+    .btn-dl.dl-video { border-color: rgba(61,255,192,.4); color: var(--green); }
+
+    .btn-reset {
+      width: 100%;
+      margin-top: 1rem;
+      padding: .6rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: .85rem;
+      cursor: pointer;
+      transition: color .2s;
+    }
+    .btn-reset:hover { color: var(--text); }
+
+    /* ── Error message ── */
+    .error-msg {
+      background: rgba(255,90,90,.1);
+      border: 1px solid rgba(255,90,90,.4);
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      color: var(--red);
+      font-size: .85rem;
+      margin-top: 1rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: none;
+    }
+
+    /* ── Stars ── */
+    .stars { display: flex; gap: .25rem; justify-content: center; }
+    .star {
+      font-size: 1.6rem; cursor: pointer; color: var(--border);
+      transition: color .15s; line-height: 1;
+    }
+    .star.active { color: var(--gold); }
+    .star:hover, .star:hover ~ .star { color: var(--border); }
+    .stars:hover .star { color: var(--gold); }
+    .stars .star:hover ~ .star { color: var(--border); }
+
+    /* ── Catalog ── */
+    .catalog-item {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: .75rem 1rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.02);
+      transition: border-color .2s;
+    }
+    .catalog-item:hover { border-color: var(--accent1); }
+    .catalog-item .ci-info { flex: 1; min-width: 0; }
+    .catalog-item .ci-title {
+      font-weight: 600; font-size: .95rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .catalog-item .ci-meta { font-size: .78rem; color: var(--muted); margin-top: .15rem; }
+    .catalog-item .ci-actions { display: flex; gap: .4rem; flex-shrink: 0; }
+    .ci-btn {
+      padding: .35rem .6rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: .75rem;
+      cursor: pointer;
+      transition: all .2s;
+      white-space: nowrap;
+    }
+    .ci-btn:hover { border-color: var(--accent1); color: var(--text); }
+    .ci-btn.ci-yt { border-color: rgba(255,90,205,.4); color: var(--accent2); }
+    .ci-btn.ci-yt:hover { background: rgba(255,90,205,.1); }
+    .ci-btn.ci-del { border-color: rgba(255,90,90,.3); color: var(--red); }
+    .ci-btn.ci-del:hover { background: rgba(255,90,90,.1); }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 2.5rem;
+      color: var(--muted);
+      font-size: .78rem;
+      text-align: center;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>&#127908; Karaoke Generator</h1>
+  <p>Upload a track or paste a URL (YouTube, Spotify, SoundCloud, Yandex Music) — get word-by-word karaoke subs + instrumental</p>
+  <div style="margin-top:.8rem;">
+    <button class="tab" id="nav-create" onclick="showView('create')" style="padding:.4rem 1.2rem;font-size:.85rem;">Create New</button>
+    <button class="tab" id="nav-catalog" onclick="showView('catalog')" style="padding:.4rem 1.2rem;font-size:.85rem;">Song Catalog</button>
+  </div>
+</header>
+
+<div class="card" id="form-card">
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="file">&#128190; File</button>
+    <button class="tab" data-tab="youtube">&#127909; YouTube / Spotify / SoundCloud / Yandex</button>
+  </div>
+
+  <!-- File drop zone -->
+  <div class="drop-zone" id="drop-zone">
+    <input type="file" id="file-input" accept="audio/*,video/*">
+    <div class="icon">&#127925;</div>
+    <div>Drop your audio / video here, or click to browse</div>
+    <div class="hint">MP3, WAV, FLAC, MP4, WEBM, MKV&hellip;</div>
+    <div class="filename" id="file-name"></div>
+  </div>
+
+  <!-- YouTube URL -->
+  <div class="url-wrap" id="url-wrap">
+    <label for="yt-url">YouTube / Spotify / SoundCloud / Yandex Music URL</label>
+    <input type="url" id="yt-url" placeholder="YouTube, Spotify, SoundCloud, or Yandex Music URL">
+  </div>
+
+  <!-- Model + Language -->
+  <div class="option-row">
+    <label for="model-select">Whisper model</label>
+    <select id="model-select">
+      <option value="tiny">tiny &mdash; fastest, lower accuracy</option>
+      <option value="base">base &mdash; fast, decent accuracy</option>
+      <option value="small">small &mdash; good balance</option>
+      <option value="medium" selected>medium &mdash; recommended</option>
+      <option value="large-v3">large-v3 &mdash; best accuracy, slow</option>
+    </select>
+  </div>
+  <div class="option-row">
+    <label for="lang-select">Language</label>
+    <select id="lang-select">
+      <option value="auto" selected>auto-detect</option>
+      <option value="en">English</option>
+      <option value="es">Spanish</option>
+      <option value="fr">French</option>
+      <option value="de">German</option>
+      <option value="it">Italian</option>
+      <option value="pt">Portuguese</option>
+      <option value="ru">Russian</option>
+      <option value="be">Belarusian</option>
+      <option value="pl">Polish</option>
+      <option value="nl">Dutch</option>
+      <option value="tr">Turkish</option>
+      <option value="ar">Arabic</option>
+      <option value="ja">Japanese</option>
+      <option value="ko">Korean</option>
+      <option value="zh">Chinese</option>
+    </select>
+  </div>
+
+  <!-- Display mode -->
+  <div class="option-row">
+    <label for="display-mode">Display mode</label>
+    <select id="display-mode">
+      <option value="subtitles" selected>Subtitles only &mdash; karaoke highlighting</option>
+      <option value="background">Background text only &mdash; full lyrics on screen (no timing)</option>
+      <option value="both">Both &mdash; karaoke subtitles + full text behind</option>
+    </select>
+  </div>
+
+  <!-- Word timing toggle -->
+  <div class="option-row" style="margin-top:1.2rem;">
+    <label for="word-timing" style="color:var(--muted);font-size:.85rem;cursor:pointer;display:flex;align-items:center;gap:.5rem;">
+      <input type="checkbox" id="word-timing" checked style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
+      Word-by-word timing <span style="font-size:.78rem;">(highlight each word as it's sung)</span>
+    </label>
+  </div>
+
+  <!-- Video background -->
+  <div class="option-row">
+    <label for="video-bg">Video background</label>
+    <select id="video-bg">
+      <option value="color" selected>Dark background</option>
+      <option value="original">Original video (YouTube only)</option>
+      <option value="cover">Cover image (5s intro)</option>
+    </select>
+  </div>
+
+  <!-- Cover image upload (shown when "cover" selected) -->
+  <div class="option-row" id="cover-upload-row" style="display:none;align-items:flex-start;flex-direction:column;gap:.4rem;">
+    <label style="color:var(--muted);font-size:.85rem;">Cover image (optional — falls back to YouTube thumbnail)</label>
+    <input type="file" id="cover-input" accept="image/*"
+      style="font-size:.85rem;color:var(--muted);cursor:pointer;">
+  </div>
+
+  <!-- Keep chorus toggle -->
+  <div class="option-row" style="margin-top:1.2rem;">
+    <label for="keep-chorus" style="color:var(--muted);font-size:.85rem;cursor:pointer;display:flex;align-items:center;gap:.5rem;">
+      <input type="checkbox" id="keep-chorus" checked style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
+      Keep chorus <span style="font-size:.78rem;">(uncheck to auto-detect and remove repeated chorus sections)</span>
+    </label>
+  </div>
+
+  <!-- Optional lyrics -->
+  <div class="option-row" style="align-items:flex-start;flex-direction:column;gap:.4rem;margin-top:1.2rem;">
+    <label for="lyrics-input" style="color:var(--muted);font-size:.85rem;">
+      Lyrics <span style="color:var(--muted);font-weight:400;">(optional — pasted lyrics will be used as subtitle text, timed by Whisper)</span>
+    </label>
+    <textarea id="lyrics-input" rows="5" placeholder="Paste song lyrics here…"
+      style="width:100%;background:#0d0d1a;border:1px solid var(--border);border-radius:8px;
+             color:var(--text);padding:.7rem 1rem;font-size:.88rem;resize:vertical;
+             outline:none;font-family:inherit;transition:border-color .2s;"
+      onfocus="this.style.borderColor='var(--accent1)'"
+      onblur="this.style.borderColor='var(--border)'"></textarea>
+  </div>
+
+  <button class="btn-generate" id="btn-go">Generate Karaoke</button>
+</div>
+
+<!-- Progress card -->
+<div class="card" id="progress-section">
+  <div class="steps" id="steps-list">
+    <div class="step" id="step-download"><span class="step-icon">&#11015;</span> Download audio</div>
+    <div class="step" id="step-separate"><span class="step-icon">&#127908;</span> Vocal separation (Demucs)</div>
+    <div class="step" id="step-transcribe"><span class="step-icon">&#128172;</span> Transcription (Whisper)</div>
+    <div class="step" id="step-ass"><span class="step-icon">&#127916;</span> Generate karaoke subtitles</div>
+    <div class="step" id="step-video"><span class="step-icon">&#127909;</span> Render karaoke video</div>
+  </div>
+  <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+  <div class="current-step-label" id="step-label"></div>
+  <div class="lyrics-badge" id="lyrics-badge">&#10003; Lyrics found — using as subtitle text</div>
+  <div class="lyrics-badge" id="chorus-badge" style="color:var(--gold);">&#9835; Chorus detected</div>
+  <div class="error-msg" id="error-msg"></div>
+
+  <div id="results-section">
+    <div class="results-title">&#10003; Ready to download!</div>
+    <div class="download-btns">
+      <a class="btn-dl dl-video" id="dl-video" href="#" download>
+        &#127909; Karaoke Video (.mp4)
+      </a>
+      <a class="btn-dl dl-minus" id="dl-minus" href="#" download>
+        &#127925; Instrumental (minus)
+      </a>
+      <a class="btn-dl dl-ass" id="dl-ass" href="#" download>
+        &#127916; Subtitles (.ass)
+      </a>
+    </div>
+
+    <!-- Lyrics editor -->
+    <div id="lyrics-section" style="margin-top:1.25rem;border-top:1px solid var(--border);padding-top:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+        <div style="font-size:.85rem;color:var(--muted);">Lyrics (found/extracted)</div>
+        <button id="btn-lyrics-toggle" class="ci-btn" onclick="toggleLyricsEdit()" style="font-size:.75rem;">Edit</button>
+      </div>
+      <textarea id="lyrics-result" rows="8" readonly
+        style="width:100%;background:#0d0d1a;border:1px solid var(--border);border-radius:8px;
+               color:var(--text);padding:.7rem 1rem;font-size:.82rem;resize:vertical;
+               outline:none;font-family:inherit;transition:border-color .2s;opacity:.8;"></textarea>
+      <button id="btn-lyrics-save" class="btn-generate" style="margin-top:.5rem;padding:.5rem;font-size:.85rem;display:none;">
+        Re-generate with updated lyrics
+      </button>
+      <div id="lyrics-save-msg" style="text-align:center;font-size:.8rem;color:var(--muted);margin-top:.3rem;min-height:1em;"></div>
+    </div>
+
+    <!-- Rating -->
+    <div id="rating-section" style="margin-top:1.25rem;border-top:1px solid var(--border);padding-top:1rem;">
+      <div style="text-align:center;color:var(--muted);font-size:.85rem;margin-bottom:.75rem;">Rate the result to improve it</div>
+      <div style="display:flex;gap:1.5rem;justify-content:center;flex-wrap:wrap;">
+        <div style="text-align:center;">
+          <div style="font-size:.8rem;color:var(--muted);margin-bottom:.3rem;">Text accuracy</div>
+          <div class="stars" id="stars-text" data-key="text"></div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:.8rem;color:var(--muted);margin-bottom:.3rem;">Video sync</div>
+          <div class="stars" id="stars-video" data-key="video"></div>
+        </div>
+      </div>
+      <button id="btn-rate" class="btn-generate" style="margin-top:.9rem;padding:.6rem;font-size:.9rem;" disabled>
+        Submit rating
+      </button>
+      <div id="rating-msg" style="text-align:center;font-size:.82rem;color:var(--muted);margin-top:.5rem;min-height:1.1em;"></div>
+    </div>
+  </div>
+
+  <button class="btn-reset" id="btn-reset">&#8592; Start over</button>
+</div>
+
+<!-- Catalog card -->
+<div class="card" id="catalog-card" style="display:none;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h2 style="font-size:1.2rem;font-weight:700;">Song Catalog</h2>
+    <input type="text" id="catalog-search" placeholder="Search songs..."
+      style="background:#0d0d1a;border:1px solid var(--border);border-radius:8px;
+             color:var(--text);padding:.4rem .8rem;font-size:.85rem;outline:none;width:200px;"
+      oninput="loadCatalog()">
+  </div>
+  <div id="catalog-list" style="display:flex;flex-direction:column;gap:.6rem;"></div>
+  <div id="catalog-empty" style="display:none;text-align:center;color:var(--muted);padding:2rem;font-size:.9rem;">
+    No songs yet. Create your first karaoke!
+  </div>
+  <div id="catalog-pagination" style="display:flex;justify-content:center;gap:.5rem;margin-top:1rem;"></div>
+</div>
+
+<footer>
+  Powered by <strong>faster-whisper</strong> &bull; <strong>Demucs</strong> &bull; <strong>yt-dlp</strong> &bull; <strong>spotdl</strong><br>
+  All processing is local &mdash; no data leaves your server.
+</footer>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let currentJobId = null;
+  let pollTimer = null;
+  let activeTab = 'file';
+
+  // ── Tabs ──────────────────────────────────────────────────────────────────
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeTab = btn.dataset.tab;
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      $('drop-zone').style.display = activeTab === 'file' ? '' : 'none';
+      $('url-wrap').classList.toggle('visible', activeTab === 'youtube');
+    });
+  });
+
+  // ── Video background toggle ──────────────────────────────────────────────
+  $('video-bg').addEventListener('change', () => {
+    $('cover-upload-row').style.display = $('video-bg').value === 'cover' ? 'flex' : 'none';
+  });
+
+  // ── File drag-and-drop ────────────────────────────────────────────────────
+  const dropZone = $('drop-zone');
+  const fileInput = $('file-input');
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) $('file-name').textContent = fileInput.files[0].name;
+  });
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) {
+      fileInput.files = e.dataTransfer.files;
+      $('file-name').textContent = e.dataTransfer.files[0].name;
+    }
+  });
+
+  // ── Submit ────────────────────────────────────────────────────────────────
+  $('btn-go').addEventListener('click', async () => {
+    const model = $('model-select').value;
+    const language = $('lang-select').value;
+    const fd = new FormData();
+    fd.append('model', model);
+    fd.append('language', language);
+    const lyricsHint = $('lyrics-input').value.trim();
+    if (lyricsHint) fd.append('lyrics_hint', lyricsHint);
+    fd.append('word_timing', $('word-timing').checked ? 'true' : 'false');
+    const displayMode = $('display-mode').value;
+    fd.append('display_mode', displayMode);
+    fd.append('static_video', displayMode === 'background' ? 'true' : 'false');
+    fd.append('show_bg_lyrics', displayMode === 'both' ? 'true' : 'false');
+    fd.append('keep_chorus', $('keep-chorus').checked ? 'true' : 'false');
+    const videoBg = $('video-bg').value;
+    fd.append('video_bg', videoBg);
+    if ($('cover-input').files[0]) {
+      fd.append('cover_image', $('cover-input').files[0]);
+    }
+    if (displayMode === 'background' && !lyricsHint) {
+      alert('Background text mode requires lyrics to be pasted in the lyrics field.');
+      $('btn-go').disabled = false;
+      return;
+    }
+
+    if (activeTab === 'file') {
+      if (!fileInput.files[0]) { alert('Please select a file first.'); return; }
+      fd.append('file', fileInput.files[0]);
+    } else {
+      const url = $('yt-url').value.trim();
+      if (!url) { alert('Please enter a YouTube URL.'); return; }
+      fd.append('youtube_url', url);
+    }
+
+    $('btn-go').disabled = true;
+    try {
+      const res = await fetch('/api/jobs', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Server error');
+      }
+      const { job_id } = await res.json();
+      currentJobId = job_id;
+      showProgress(activeTab === 'youtube');
+      startPolling();
+    } catch (e) {
+      $('btn-go').disabled = false;
+      alert('Error: ' + e.message);
+    }
+  });
+
+  // ── Progress UI ───────────────────────────────────────────────────────────
+  // Map step keywords → step element ids + progress bar %
+  const STEP_MAP = [
+    { keywords: ['download', 'youtube', 'spotify', 'soundcloud', 'yandex', 'queued'], id: 'step-download', pct: 5  },
+    { keywords: ['separat', 'demucs', 'vocal'],    id: 'step-separate', pct: 20 },
+    { keywords: ['lyrics'],                        id: null,             pct: 55 },
+    { keywords: ['transcri', 'whisper'],           id: 'step-transcribe',pct: 60 },
+    { keywords: ['subtitle', 'karaoke', 'ass'],    id: 'step-ass',       pct: 80 },
+    { keywords: ['render', 'video'],               id: 'step-video',     pct: 85 },
+  ];
+
+  function showProgress(isYoutube) {
+    $('form-card').style.display = 'none';
+    $('progress-section').style.display = 'block';
+    $('results-section').style.display = 'none';
+    $('error-msg').style.display = 'none';
+    $('lyrics-badge').classList.remove('visible');
+    $('chorus-badge').classList.remove('visible');
+    $('progress-bar').style.width = '2%';
+    // Hide download step if not YouTube
+    $('step-download').style.display = isYoutube ? '' : 'none';
+    resetSteps();
+  }
+
+  function resetSteps() {
+    document.querySelectorAll('.step').forEach(s => {
+      s.classList.remove('active', 'done', 'error');
+      // restore original icon (remove spinner)
+      const icon = s.querySelector('.step-icon');
+      if (icon && icon.dataset.orig) icon.innerHTML = icon.dataset.orig;
+    });
+  }
+
+  // Save original icons
+  document.querySelectorAll('.step-icon').forEach(el => { el.dataset.orig = el.innerHTML; });
+
+  function guessStep(stepText) {
+    const lower = stepText.toLowerCase();
+    for (const entry of STEP_MAP) {
+      if (entry.keywords.some(k => lower.includes(k))) return entry;
+    }
+    return null;
+  }
+
+  let lastActiveStepId = null;
+
+  function updateSteps(job) {
+    if (job.lyrics_found) $('lyrics-badge').classList.add('visible');
+    if (job.chorus_detected) $('chorus-badge').classList.add('visible');
+
+    const match = guessStep(job.step || '');
+    if (!match) return;
+    const { id: stepId } = match;
+    const pct = job.pct ?? match.pct;
+
+    // Advance progress bar (pct from job overrides keyword-mapped value)
+    const bar = $('progress-bar');
+    const cur = parseFloat(bar.style.width) || 0;
+    if (pct > cur) bar.style.width = pct + '%';
+
+    if (!stepId || stepId === lastActiveStepId) return;
+
+    // Mark previous steps done
+    let found = false;
+    for (const { id } of STEP_MAP) {
+      if (!id) continue;
+      const el = $(id);
+      if (!el || el.style.display === 'none') continue;
+      if (id === stepId) {
+        found = true;
+        el.classList.remove('done', 'error');
+        el.classList.add('active');
+        const icon = el.querySelector('.step-icon');
+        if (icon) {
+          const spinner = document.createElement('div');
+          spinner.className = 'spinner';
+          icon.replaceWith(spinner);
+        }
+      } else if (!found) {
+        el.classList.remove('active', 'error');
+        el.classList.add('done');
+        const icon = el.querySelector('.spinner, .step-icon');
+        if (icon) {
+          const span = document.createElement('span');
+          span.className = 'step-icon';
+          span.dataset.orig = el.querySelector('[data-orig]')?.dataset.orig || '&#10003;';
+          span.innerHTML = '&#10003;';
+          icon.replaceWith(span);
+        }
+      }
+    }
+    if (stepId) lastActiveStepId = stepId;
+    $('step-label').textContent = job.step || '';
+  }
+
+  function markAllDone() {
+    for (const { id } of STEP_MAP) {
+      const el = $(id);
+      if (!el || el.style.display === 'none') continue;
+      el.classList.remove('active', 'error');
+      el.classList.add('done');
+      const icon = el.querySelector('.spinner, .step-icon');
+      if (icon) {
+        const span = document.createElement('span');
+        span.className = 'step-icon';
+        span.innerHTML = '&#10003;';
+        icon.replaceWith(span);
+      }
+    }
+  }
+
+  // ── Polling ───────────────────────────────────────────────────────────────
+  function startPolling() {
+    lastActiveStepId = null;
+    pollTimer = setInterval(pollJob, 1500);
+  }
+
+  async function pollJob() {
+    if (!currentJobId) return;
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}`);
+      if (!res.ok) return;
+      const job = await res.json();
+
+      $('step-label').textContent = job.step || '';
+
+      if (job.status === 'done') {
+        clearInterval(pollTimer);
+        markAllDone();
+        $('progress-bar').style.width = '100%';
+        $('step-label').textContent = '';
+        showResults(job);
+      } else if (job.status === 'error') {
+        clearInterval(pollTimer);
+        showError(job.error || 'Unknown error');
+      } else {
+        updateSteps(job);
+      }
+    } catch (e) {
+      // network hiccup — keep polling
+    }
+  }
+
+  function showResults(job) {
+    const files = job.files || {};
+    $('dl-video').href = files.video ? `/api/jobs/${currentJobId}/download/video` : '#';
+    $('dl-minus').href = files.minus ? `/api/jobs/${currentJobId}/download/minus` : '#';
+    $('dl-ass').href   = files.ass   ? `/api/jobs/${currentJobId}/download/ass`   : '#';
+    if (!files.video) $('dl-video').style.opacity = '.3';
+    if (!files.minus) $('dl-minus').style.opacity = '.3';
+    if (!files.ass)   $('dl-ass').style.opacity   = '.3';
+    // Show lyrics
+    const lyricsText = job.lyrics_text || '';
+    $('lyrics-result').value = lyricsText;
+    $('lyrics-result').readOnly = true;
+    $('lyrics-result').style.opacity = '.8';
+    $('btn-lyrics-save').style.display = 'none';
+    $('btn-lyrics-toggle').textContent = 'Edit';
+    $('lyrics-save-msg').textContent = '';
+    $('lyrics-section').style.display = lyricsText ? '' : 'none';
+
+    // Reset rating
+    ratingValues.text = 0; ratingValues.video = 0;
+    buildStars('stars-text'); buildStars('stars-video');
+    $('btn-rate').disabled = true;
+    $('rating-msg').textContent = '';
+    const maxRetries = 2;
+    $('rating-section').style.display = (job.retry_count || 0) >= maxRetries ? 'none' : '';
+    $('results-section').style.display = 'block';
+  }
+
+  function showError(msg) {
+    const el = $('error-msg');
+    el.textContent = msg;
+    el.style.display = '';
+    // Mark last active step as error
+    if (lastActiveStepId) {
+      const stepEl = $(lastActiveStepId);
+      if (stepEl) {
+        stepEl.classList.remove('active', 'done');
+        stepEl.classList.add('error');
+        const spinner = stepEl.querySelector('.spinner');
+        if (spinner) {
+          const span = document.createElement('span');
+          span.className = 'step-icon';
+          span.innerHTML = '&#10007;';
+          spinner.replaceWith(span);
+        }
+      }
+    }
+  }
+
+  // ── Rating ────────────────────────────────────────────────────────────────
+  const ratingValues = { text: 0, video: 0 };
+
+  function buildStars(containerId) {
+    const el = $(containerId);
+    el.innerHTML = '';
+    for (let i = 1; i <= 5; i++) {
+      const s = document.createElement('span');
+      s.className = 'star';
+      s.textContent = '★';
+      s.dataset.val = i;
+      s.addEventListener('click', () => {
+        const key = el.dataset.key;
+        ratingValues[key] = i;
+        el.querySelectorAll('.star').forEach(st => {
+          st.classList.toggle('active', parseInt(st.dataset.val) <= i);
+        });
+        $('btn-rate').disabled = !(ratingValues.text > 0 && ratingValues.video > 0);
+      });
+      el.appendChild(s);
+    }
+  }
+
+  $('btn-rate').addEventListener('click', async () => {
+    if (!currentJobId) return;
+    $('btn-rate').disabled = true;
+    $('rating-msg').textContent = 'Submitting…';
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/rate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text_stars: ratingValues.text, video_stars: ratingValues.video }),
+      });
+      const data = await res.json();
+      if (data.retrying) {
+        $('rating-msg').textContent = `Improving (attempt ${data.attempt})…`;
+        setTimeout(() => {
+          $('results-section').style.display = 'none';
+          $('rating-section') && ($('rating-section').style.display = 'none');
+          $('progress-bar').style.width = '45%';
+          lastActiveStepId = null;
+          startPolling();
+        }, 800);
+      } else {
+        $('rating-msg').textContent = 'Thanks for your feedback!';
+      }
+    } catch (e) {
+      $('rating-msg').textContent = 'Could not submit rating.';
+      $('btn-rate').disabled = false;
+    }
+  });
+
+  // ── Reset ─────────────────────────────────────────────────────────────────
+  $('btn-reset').addEventListener('click', () => {
+    clearInterval(pollTimer);
+    currentJobId = null;
+    lastActiveStepId = null;
+    fileInput.value = '';
+    $('file-name').textContent = '';
+    $('yt-url').value = '';
+    $('lyrics-input').value = '';
+    $('word-timing').checked = true;
+    $('display-mode').value = 'subtitles';
+    $('video-bg').value = 'color';
+    $('cover-upload-row').style.display = 'none';
+    $('cover-input').value = '';
+    $('keep-chorus').checked = true;
+    $('btn-go').disabled = false;
+    $('form-card').style.display = '';
+    $('progress-section').style.display = 'none';
+    $('dl-video').style.opacity = '';
+    $('dl-minus').style.opacity = '';
+    $('dl-ass').style.opacity = '';
+    $('progress-bar').style.width = '0%';
+    $('lyrics-badge').classList.remove('visible');
+  });
+
+  // ── View switching ───────────────────────────────────────────────────────
+  let currentView = 'create';
+
+  function showView(view) {
+    currentView = view;
+    $('nav-create').classList.toggle('active', view === 'create');
+    $('nav-catalog').classList.toggle('active', view === 'catalog');
+    $('catalog-card').style.display = view === 'catalog' ? '' : 'none';
+
+    if (view === 'create') {
+      // If a job is actively running, show progress; otherwise reset to fresh form
+      const jobRunning = currentJobId && pollTimer;
+      if (jobRunning) {
+        $('form-card').style.display = 'none';
+        $('progress-section').style.display = 'block';
+      } else {
+        // Full reset
+        clearInterval(pollTimer);
+        currentJobId = null;
+        lastActiveStepId = null;
+        fileInput.value = '';
+        $('file-name').textContent = '';
+        $('yt-url').value = '';
+        $('lyrics-input').value = '';
+        $('word-timing').checked = true;
+        $('display-mode').value = 'subtitles';
+        $('video-bg').value = 'color';
+        $('cover-upload-row').style.display = 'none';
+        $('cover-input').value = '';
+        $('keep-chorus').checked = true;
+        $('btn-go').disabled = false;
+        $('form-card').style.display = '';
+        $('progress-section').style.display = 'none';
+        $('dl-video').style.opacity = '';
+        $('dl-minus').style.opacity = '';
+        $('dl-ass').style.opacity = '';
+        $('progress-bar').style.width = '0%';
+        $('lyrics-badge').classList.remove('visible');
+        $('chorus-badge').classList.remove('visible');
+        resetSteps();
+      }
+    } else {
+      $('form-card').style.display = 'none';
+      $('progress-section').style.display = 'none';
+    }
+
+    if (view === 'catalog') loadCatalog();
+  }
+
+  // Initialize nav
+  $('nav-create').classList.add('active');
+
+  // ── Catalog ──────────────────────────────────────────────────────────────
+  let catalogPage = 0;
+  const PAGE_SIZE = 20;
+
+  async function loadCatalog() {
+    const search = $('catalog-search').value.trim();
+    const offset = catalogPage * PAGE_SIZE;
+    try {
+      const res = await fetch(`/api/catalog?search=${encodeURIComponent(search)}&limit=${PAGE_SIZE}&offset=${offset}`);
+      const data = await res.json();
+      renderCatalog(data.songs, data.total);
+    } catch (e) {
+      $('catalog-list').innerHTML = '<div style="color:var(--red);text-align:center;">Failed to load catalog</div>';
+    }
+  }
+
+  function renderCatalog(songs, total) {
+    const list = $('catalog-list');
+    const empty = $('catalog-empty');
+    if (!songs.length) {
+      list.innerHTML = '';
+      empty.style.display = '';
+      return;
+    }
+    empty.style.display = 'none';
+    list.innerHTML = songs.map(s => {
+      const date = s.created_at ? new Date(s.created_at + 'Z').toLocaleDateString() : '';
+      const artist = s.artist ? `<span style="color:var(--accent1)">${esc(s.artist)}</span> — ` : '';
+      return `
+        <div class="catalog-item">
+          <div class="ci-info">
+            <div class="ci-title">${artist}${esc(s.title)}</div>
+            <div class="ci-meta">${date}${s.source_url ? ' &bull; YouTube' : ' &bull; File upload'}${s.youtube_ready ? ' &bull; YT Ready' : ''}</div>
+          </div>
+          <div class="ci-actions">
+            ${s.video_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/video" download>Video</a>` : ''}
+            ${s.minus_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/minus" download>Minus</a>` : ''}
+            ${s.ass_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/ass" download>Subs</a>` : ''}
+            <button class="ci-btn ci-yt" onclick="prepareYouTube('${s.job_id}', this)">Prepare YT</button>
+            <button class="ci-btn ci-del" onclick="deleteSong('${s.job_id}')">Del</button>
+          </div>
+        </div>`;
+    }).join('');
+
+    // Pagination
+    const totalPages = Math.ceil(total / PAGE_SIZE);
+    const pag = $('catalog-pagination');
+    if (totalPages <= 1) { pag.innerHTML = ''; return; }
+    let html = '';
+    for (let i = 0; i < totalPages; i++) {
+      const cls = i === catalogPage ? 'active' : '';
+      html += `<button class="tab ${cls}" onclick="catalogPage=${i};loadCatalog()" style="padding:.3rem .6rem;font-size:.8rem;">${i+1}</button>`;
+    }
+    pag.innerHTML = html;
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
+
+  async function prepareYouTube(jobId, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Preparing...';
+    try {
+      const res = await fetch(`/api/catalog/${jobId}/prepare-youtube`, { method: 'POST' });
+      const data = await res.json();
+      if (data.ready) {
+        btn.textContent = 'Download';
+        btn.onclick = () => { window.location.href = data.download_url; };
+        btn.disabled = false;
+      } else {
+        btn.textContent = 'Error';
+      }
+    } catch (e) {
+      btn.textContent = 'Error';
+      btn.disabled = false;
+    }
+  }
+
+  async function deleteSong(jobId) {
+    if (!confirm('Delete this song and all its files?')) return;
+    try {
+      await fetch(`/api/catalog/${jobId}`, { method: 'DELETE' });
+      loadCatalog();
+    } catch (e) {
+      alert('Failed to delete');
+    }
+  }
+
+  // ── Lyrics editor ────────────────────────────────────────────────────────
+  function toggleLyricsEdit() {
+    const ta = $('lyrics-result');
+    const isEditing = !ta.readOnly;
+    if (isEditing) {
+      // Cancel edit
+      ta.readOnly = true;
+      ta.style.opacity = '.8';
+      $('btn-lyrics-save').style.display = 'none';
+      $('btn-lyrics-toggle').textContent = 'Edit';
+    } else {
+      // Enable edit
+      ta.readOnly = false;
+      ta.style.opacity = '1';
+      ta.style.borderColor = 'var(--accent1)';
+      $('btn-lyrics-save').style.display = '';
+      $('btn-lyrics-toggle').textContent = 'Cancel';
+      ta.focus();
+    }
+  }
+
+  $('btn-lyrics-save').addEventListener('click', async () => {
+    if (!currentJobId) return;
+    const newLyrics = $('lyrics-result').value.trim();
+    if (!newLyrics) { alert('Lyrics cannot be empty'); return; }
+
+    $('btn-lyrics-save').disabled = true;
+    $('lyrics-save-msg').textContent = 'Re-generating with updated lyrics...';
+
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/update-lyrics`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lyrics: newLyrics }),
+      });
+      const data = await res.json();
+      if (data.retrying) {
+        // Hide results, show progress
+        $('results-section').style.display = 'none';
+        $('progress-bar').style.width = '45%';
+        lastActiveStepId = null;
+        startPolling();
+      }
+    } catch (e) {
+      $('lyrics-save-msg').textContent = 'Failed to update lyrics';
+      $('btn-lyrics-save').disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
