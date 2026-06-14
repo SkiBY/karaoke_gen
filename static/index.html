@@ -775,12 +775,14 @@
 
       if (job.status === 'done') {
         clearInterval(pollTimer);
+        pollTimer = null;
         markAllDone();
         $('progress-bar').style.width = '100%';
         $('step-label').textContent = '';
         showResults(job);
       } else if (job.status === 'error') {
         clearInterval(pollTimer);
+        pollTimer = null;
         showError(job.error || 'Unknown error');
       } else {
         updateSteps(job);

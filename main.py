@@ -58,6 +58,28 @@ def _clean_title(title: str) -> str:
     return _TITLE_JUNK.sub("", title).strip(" -–—")
 
 
+def _toks(s: str) -> set:
+    """Unicode-aware lowercase word tokens (works for Cyrillic too)."""
+    return set(re.findall(r"\w+", (s or "").lower()))
+
+
+def _is_relevant(want_title: str, want_artist: str, got_title: str, got_artist: str) -> bool:
+    """Guard against lyrics APIs returning a completely different song.
+
+    Accept only if enough of the requested title tokens appear in the result
+    title. If we can't judge (no requested title tokens), accept.
+    """
+    wt = _toks(want_title)
+    if not wt:
+        return True
+    gt = _toks(got_title)
+    title_overlap = len(wt & gt) / len(wt)
+    # If the artist is known and matches, relax the title threshold a little.
+    wa, ga = _toks(want_artist), _toks(got_artist)
+    artist_match = bool(wa and ga and (wa & ga))
+    return title_overlap >= (0.4 if artist_match else 0.6)
+
+
 def _fetch_lrclib(title: str) -> str:
     """Query lrclib.net — free API, good Cyrillic coverage."""
     try:
@@ -77,8 +99,11 @@ def _fetch_lrclib(title: str) -> str:
             results = json.loads(r.read())
         for item in results:
             plain = (item.get("plainLyrics") or "").strip()
-            if plain:
-                return plain
+            if not plain:
+                continue
+            if not _is_relevant(track, artist, item.get("trackName", ""), item.get("artistName", "")):
+                continue
+            return plain
     except Exception:
         pass
     return ""
@@ -112,8 +137,10 @@ def _fetch_yandex_lyrics(title: str) -> str:
         import urllib.request, json  # noqa: PLC0415
         parts = title.split(" - ", 1)
         if len(parts) == 2:
+            want_artist, want_track = parts[0], parts[1]
             query = f"{parts[0]} {parts[1]}"
         else:
+            want_artist, want_track = "", title
             query = title
         params = urllib.parse.urlencode({"text": query, "type": "track", "page": 0})
         req = urllib.request.Request(
@@ -125,8 +152,18 @@ def _fetch_yandex_lyrics(title: str) -> str:
         tracks = data.get("tracks", {}).get("items", [])
         if not tracks:
             return ""
-        track_id = tracks[0].get("id")
-        album_id = tracks[0].get("albums", [{}])[0].get("id", "")
+        # Pick the first search hit whose title/artist actually matches the
+        # request — Yandex returns *something* for almost any query.
+        track = None
+        for cand in tracks[:5]:
+            got_artist = " ".join(a.get("name", "") for a in cand.get("artists", []))
+            if _is_relevant(want_track, want_artist, cand.get("title", ""), got_artist):
+                track = cand
+                break
+        if track is None:
+            return ""
+        track_id = track.get("id")
+        album_id = track.get("albums", [{}])[0].get("id", "")
         if not track_id:
             return ""
         # Fetch lyrics supplement
@@ -188,7 +225,23 @@ def _fetch_lyrics(title: str):
     # 1. syncedlyrics (Spotify, Musixmatch, Genius, NetEase…)
     try:
         import syncedlyrics  # noqa: PLC0415
-        lrc = syncedlyrics.search(clean) or syncedlyrics.search(title)
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTimeout  # noqa: PLC0415
+
+        def _synced(term: str):
+            # syncedlyrics.search() has no timeout param and can hang on a
+            # dead provider socket; enforce a wall-clock cap. Runs in a worker
+            # thread, so signal.alarm() is unavailable — use a future timeout.
+            # Don't use `with`: __exit__ does shutdown(wait=True), which would
+            # block on the hung search thread. Detach instead and let it die.
+            ex = ThreadPoolExecutor(max_workers=1)
+            try:
+                return ex.submit(syncedlyrics.search, term).result(timeout=15)
+            except FTimeout:
+                return None
+            finally:
+                ex.shutdown(wait=False)
+
+        lrc = _synced(clean) or _synced(title)
         if lrc:
             synced, plain = _parse_lrc(lrc)
             if plain:
@@ -1127,15 +1180,19 @@ def _run_transcription_and_render(
             "-shortest",
         ]
     elif video_bg == "cover" and cover_path and Path(cover_path).exists():
-        # 5-second cover intro, then dark background for the rest
+        # 5-second cover intro, then dark background for the rest of the song.
+        # The bg segment must span the remaining song length, otherwise concat
+        # produces a ~6s clip and -shortest truncates the whole output to it.
+        intro = 5.0
+        bg_dur = max(0.1, (info.duration or 0) - intro)
         ffmpeg_cmd = [
             FFMPEG,
-            "-loop", "1", "-t", "5", "-i", cover_path,
+            "-loop", "1", "-t", str(intro), "-i", cover_path,
             "-f", "lavfi", "-i", "color=c=0x0d0d1a:size=1920x1080:rate=25",
             "-i", str(minus_path),
             "-filter_complex",
             f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[cover];"
-            f"[1:v]trim=duration=1,setpts=PTS-STARTPTS[bg];"
+            f"[1:v]trim=duration={bg_dur:.3f},setpts=PTS-STARTPTS[bg];"
             f"[cover][bg]concat=n=2:v=1:a=0[base];"
             f"[base]ass={ass_path},{title_filter}[vout]",
             "-map", "[vout]", "-map", "2:a",
