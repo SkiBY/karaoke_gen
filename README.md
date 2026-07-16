@@ -6,6 +6,8 @@ Local web app that takes a music track (file upload or URL from YouTube, Spotify
 - **`_karaoke.ass`** — Raw ASS subtitle file for use in VLC, mpv, Aegisub, etc.
 - **`.cdg` + `.mp3` bundle** _(optional)_ — CD+G, the format real karaoke machines and MP3+G players use
 
+![Karaoke Generator web UI](docs/screenshot.png)
+
 ## Stack
 
 | Step | Tool |
