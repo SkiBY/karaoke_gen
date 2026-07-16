@@ -353,6 +353,8 @@ async def create_job(
     display_mode: str = Form("subtitles"),  # "subtitles", "background", "both"
     video_bg: str = Form("color"),  # "color" (dark bg), "original" (keep YT video), "cover" (thumbnail intro)
     cover_image: Optional[UploadFile] = File(None),
+    make_cdg: bool = Form(False),  # also emit a CD+G (.cdg + .mp3) karaoke bundle
+    review: bool = Form(False),  # pause for interactive review before rendering
 ):
     url = (youtube_url or "").strip()
     if not file and not url:
@@ -361,7 +363,8 @@ async def create_job(
     job_id = str(uuid.uuid4())
     job_dir = WORK_DIR / job_id
     job_dir.mkdir()
-    jobs[job_id] = {"status": "pending", "step": "Queued", "pct": 0, "error": "", "files": {}}
+    jobs[job_id] = {"status": "pending", "step": "Queued", "pct": 0, "error": "", "files": {},
+                    "_make_cdg": make_cdg, "_review": review}
 
     hint = (lyrics_hint or "").strip()
 
@@ -397,15 +400,41 @@ def get_job(job_id: str):
     return jobs[job_id]
 
 
+# Download keys that have a persistent catalog column to fall back on.
+_FILE_KEY_COLUMN = {
+    "video": "video_path", "minus": "minus_path",
+    "ass": "ass_path", "cdg": "cdg_path",
+}
+
+
 @app.get("/api/jobs/{job_id}/download/{file_key}")
 def download_file(job_id: str, file_key: str):
-    if job_id not in jobs:
-        raise HTTPException(404, "Job not found")
-    path_str = jobs[job_id].get("files", {}).get(file_key)
+    path_str = jobs.get(job_id, {}).get("files", {}).get(file_key)
     if not path_str:
+        # Fall back to the persistent catalog — in-memory job state is lost on
+        # restart, but catalog downloads should keep working.
+        col = _FILE_KEY_COLUMN.get(file_key)
+        if col:
+            song = get_song(job_id)
+            if song:
+                path_str = song.get(col) or ""
+    if not path_str or not Path(path_str).exists():
         raise HTTPException(404, "File not ready")
     p = Path(path_str)
     return FileResponse(str(p), filename=p.name, media_type="application/octet-stream")
+
+
+@app.get("/api/jobs/{job_id}/audio")
+def stream_audio(job_id: str):
+    """Serve the instrumental for inline playback (review editor), not download."""
+    path_str = jobs.get(job_id, {}).get("files", {}).get("minus")
+    if not path_str:
+        song = get_song(job_id)
+        if song:
+            path_str = song.get("minus_path") or ""
+    if not path_str or not Path(path_str).exists():
+        raise HTTPException(404, "Audio not available")
+    return FileResponse(str(path_str), media_type="audio/mpeg")
 
 
 def _detect_source(url: str) -> str:
@@ -1010,6 +1039,30 @@ def _norm_align(s: str) -> str:
     return re.sub(r"[^\w\s]", "", s.lower().translate(_CYR))
 
 
+def _generate_cdg_bundle(job_id, segments, safe, minus_path, job_dir, duration):
+    """Render a CD+G file and bundle it with the instrumental as an MP3+G ZIP.
+
+    Players expect the .cdg and .mp3 to share a basename, so both are written
+    into the ZIP as `<safe>.cdg` / `<safe>.mp3`. Registers the ZIP under the
+    "cdg" download key and records its path in the catalog.
+    """
+    import zipfile  # noqa: PLC0415
+    from cdg_gen import generate_cdg  # noqa: PLC0415
+
+    cdg_path = job_dir / f"{safe}.cdg"
+    generate_cdg(segments, str(cdg_path), duration=duration)
+
+    zip_path = job_dir / f"{safe}_cdg.zip"
+    with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(str(cdg_path), f"{safe}.cdg")
+        if minus_path and Path(minus_path).exists():
+            zf.write(minus_path, f"{safe}.mp3")
+
+    jobs[job_id].setdefault("files", {})["cdg"] = str(zip_path)
+    upsert_song(job_id, cdg_path=str(zip_path))
+    return str(zip_path)
+
+
 def _run_transcription_and_render(
     job_id, input_path, vocals_wav, minus_path, model, language,
     lyrics_hint, lyrics, safe, title, job_dir, whisper_settings=None, word_timing=False,
@@ -1140,21 +1193,78 @@ def _run_transcription_and_render(
             segments.append(SimpleNamespace(
                 start=start_sec, end=end_sec, text=f" {line_text}", words=new_words,
             ))
-    elif lyrics_hint and filtered:
-        # User provided lyrics — replace text with exact lyric lines (keep timestamps)
-        lyric_lines = [l.strip() for l in lyrics_hint.splitlines() if l.strip()]
-        segments = _align_to_lyrics(filtered, lyric_lines)
+    elif lyrics and filtered:
+        # Anchor-based correction: align Whisper's word stream against the
+        # reference lyrics (pasted or fetched), keep Whisper timing on the words
+        # that match, and substitute reference spelling in the mismatching gaps.
+        _set(job_id, step="Aligning transcription to lyrics...", pct=80)
+        corrected = None
+        try:
+            from lyrics_correction import correct_segments  # noqa: PLC0415
+            corrected = correct_segments(filtered, lyrics)
+        except Exception:
+            corrected = None
+        if corrected:
+            segments = corrected
+        elif lyrics_hint:
+            # Fall back to the previous line-by-line alignment for pasted lyrics.
+            lyric_lines = [l.strip() for l in lyrics_hint.splitlines() if l.strip()]
+            segments = _align_to_lyrics(filtered, lyric_lines)
+        else:
+            segments = filtered
     else:
         segments = filtered
 
-    _set(job_id, step="Generating karaoke subtitles...", pct=82)
+    # ── Interactive review pause ─────────────────────────────────────────
+    # When review mode is on, stop here with word-timed segments ready and let
+    # the user fix text/timing in the browser before we spend time rendering.
+    if jobs[job_id].get("_review"):
+        import json  # noqa: PLC0415
+        seg_json = _segments_to_json(segments)
+        (job_dir / "segments.json").write_text(
+            json.dumps(seg_json, ensure_ascii=False), encoding="utf-8")
+        _set(job_id, status="review", step="Ready for review", pct=80,
+             _media_duration=info.duration or 0.0, _word_timing=word_timing,
+             lyrics_text=lyrics or lyrics_hint or jobs[job_id].get("lyrics_text", ""))
+        return
+
+    _render_from_segments(
+        job_id, segments,
+        minus_path=minus_path, safe=safe, title=title, job_dir=job_dir,
+        word_timing=word_timing, display_mode=display_mode, video_bg=video_bg,
+        cover_path=cover_path, original_video=original_video,
+        lyrics=lyrics, lyrics_hint=lyrics_hint,
+        media_duration=info.duration or 0.0,
+    )
+
+
+def _render_from_segments(job_id, segments, minus_path, safe, title, job_dir,
+                          word_timing=True, display_mode="subtitles",
+                          video_bg="color", cover_path="", original_video="",
+                          lyrics="", lyrics_hint="", media_duration=0.0):
+    """Render timed ``segments`` to ASS + (optional) CD+G + the final MP4.
+
+    Split out from transcription so it can also run standalone after an
+    interactive review edit — no Whisper/Demucs, just subtitle + video work.
+    """
+    _set(job_id, status="running", step="Generating karaoke subtitles...", pct=82)
     from ass_gen import generate_ass  # noqa: PLC0415
     ass_path = job_dir / f"{safe}_karaoke.ass"
     bg_lyrics = (lyrics or lyrics_hint or "") if display_mode == "both" else ""
-    duration = info.duration if display_mode == "both" else 0
+    duration = media_duration if display_mode == "both" else 0
     generate_ass(segments, str(ass_path), word_timing=word_timing,
                  background_lyrics=bg_lyrics, duration=duration)
     jobs[job_id]["files"]["ass"] = str(ass_path)
+
+    # ── Optional CD+G (.cdg + .mp3) — the real karaoke-machine format ─────
+    if jobs[job_id].get("_make_cdg"):
+        try:
+            _set(job_id, step="Generating CD+G (.cdg)...", pct=85)
+            _generate_cdg_bundle(job_id, segments, safe, minus_path, job_dir,
+                                 duration=media_duration or 0.0)
+        except Exception as exc:
+            # Never let CDG generation failure kill the main job.
+            _set(job_id, cdg_error=str(exc)[:300])
 
     _set(job_id, step="Rendering karaoke video...", pct=88)
     video_path = job_dir / f"{safe}_karaoke.mp4"
@@ -1184,7 +1294,7 @@ def _run_transcription_and_render(
         # The bg segment must span the remaining song length, otherwise concat
         # produces a ~6s clip and -shortest truncates the whole output to it.
         intro = 5.0
-        bg_dur = max(0.1, (info.duration or 0) - intro)
+        bg_dur = max(0.1, (media_duration or 0) - intro)
         ffmpeg_cmd = [
             FFMPEG,
             "-loop", "1", "-t", str(intro), "-i", cover_path,
@@ -1224,6 +1334,149 @@ def _run_transcription_and_render(
                 ass_path=str(ass_path), lyrics=lyrics or lyrics_hint or "")
 
 
+# ── Segment (de)serialisation + interactive review ────────────────────────────
+
+def _segments_to_json(segments) -> list:
+    """Serialise render segments to plain dicts for the review editor."""
+    out = []
+    for s in segments:
+        words = [
+            {"text": (w.word or "").strip(),
+             "start": round(float(w.start), 3), "end": round(float(w.end), 3)}
+            for w in (getattr(s, "words", None) or [])
+        ]
+        out.append({
+            "start": round(float(s.start), 3), "end": round(float(s.end), 3),
+            "text": (getattr(s, "text", "") or "").strip(), "words": words,
+        })
+    return out
+
+
+def _json_to_segments(data: list):
+    """Rebuild render segments from edited review data.
+
+    Preserves per-word timing when a line's word count is unchanged (the common
+    "fix one misheard word" case), scaling it to the possibly-moved line span.
+    Otherwise redistributes the line's words across its span by character length.
+    """
+    from types import SimpleNamespace  # noqa: PLC0415
+    segs = []
+    for item in data:
+        text = (item.get("text") or "").strip()
+        tokens = re.findall(r"\S+", text)
+        words_in = item.get("words") or []
+        try:
+            nstart = float(item.get("start", 0.0))
+            nend = float(item.get("end", nstart + 3.0))
+        except (TypeError, ValueError):
+            continue
+        if nend <= nstart:
+            nend = nstart + max(0.3, len(tokens) * 0.3)
+        if not tokens:
+            continue
+
+        words = []
+        if words_in and len(tokens) == len(words_in):
+            # Same word count → keep relative timing, scaled to the new span.
+            ows = float(words_in[0]["start"])
+            owe = float(words_in[-1]["end"])
+            ospan = max(owe - ows, 1e-3)
+            nspan = max(nend - nstart, 1e-3)
+            for tok, w in zip(tokens, words_in):
+                s = nstart + (float(w["start"]) - ows) / ospan * nspan
+                e = nstart + (float(w["end"]) - ows) / ospan * nspan
+                words.append(SimpleNamespace(word=f" {tok}", start=s,
+                                             end=max(e, s + 0.05), probability=1.0))
+        else:
+            # Word count changed → char-weighted distribution across the span.
+            span = max(nend - nstart, 0.1)
+            weights = [max(len(t), 1) for t in tokens]
+            total = sum(weights)
+            cum = 0
+            for tok, wt in zip(tokens, weights):
+                fs = cum / total
+                cum += wt
+                fe = cum / total
+                words.append(SimpleNamespace(word=f" {tok}", start=nstart + span * fs,
+                                             end=nstart + span * fe, probability=1.0))
+
+        segs.append(SimpleNamespace(start=words[0].start, end=words[-1].end,
+                                    text=f" {text}", words=words))
+    segs.sort(key=lambda s: s.start)
+    return segs
+
+
+@app.get("/api/jobs/{job_id}/segments")
+def get_segments(job_id: str):
+    """Return the timed segments awaiting review, for the editor UI."""
+    if job_id not in jobs:
+        raise HTTPException(404, "Job not found")
+    seg_file = WORK_DIR / job_id / "segments.json"
+    if not seg_file.exists():
+        raise HTTPException(404, "No segments to review")
+    import json  # noqa: PLC0415
+    segments = json.loads(seg_file.read_text(encoding="utf-8"))
+    job = jobs[job_id]
+    return {
+        "segments": segments,
+        "title": job.get("title", "track"),
+        "word_timing": job.get("_word_timing", True),
+        "media_duration": job.get("_media_duration", 0.0),
+        "minus_available": bool(job.get("files", {}).get("minus")),
+    }
+
+
+class RenderPayload(BaseModel):
+    segments: list
+
+
+@app.post("/api/jobs/{job_id}/render")
+async def render_reviewed(job_id: str, payload: RenderPayload, background_tasks: BackgroundTasks):
+    """Render the video from user-reviewed segments (skips Whisper/Demucs)."""
+    if job_id not in jobs:
+        raise HTTPException(404, "Job not found")
+    job = jobs[job_id]
+    if job.get("status") not in ("review", "done", "error"):
+        raise HTTPException(400, "Job still running")
+    if not job.get("_minus_path"):
+        raise HTTPException(400, "Nothing to render for this job")
+
+    # Persist the edited segments so a restart / re-render keeps them.
+    import json  # noqa: PLC0415
+    (WORK_DIR / job_id / "segments.json").write_text(
+        json.dumps(payload.segments, ensure_ascii=False), encoding="utf-8")
+
+    _set(job_id, status="running", step="Rendering reviewed karaoke...", pct=82,
+         error="", text_stars=None, video_stars=None)
+    background_tasks.add_task(_render_task, job_id, payload.segments)
+    return {"rendering": True}
+
+
+def _render_task(job_id: str, segments_data: list) -> None:
+    job = jobs[job_id]
+    try:
+        segments = _json_to_segments(segments_data)
+        if not segments:
+            raise RuntimeError("No valid segments to render")
+        _render_from_segments(
+            job_id, segments,
+            minus_path=job.get("_minus_path"),
+            safe=job.get("_safe", "track"),
+            title=job.get("title", "track"),
+            job_dir=WORK_DIR / job_id,
+            word_timing=job.get("_word_timing", True),
+            display_mode=job.get("_display_mode", "subtitles"),
+            video_bg=job.get("_video_bg", "color"),
+            cover_path=job.get("_cover_path", ""),
+            original_video=job.get("_original_video", ""),
+            lyrics=job.get("_lyrics", ""),
+            lyrics_hint=job.get("_lyrics_hint", ""),
+            media_duration=job.get("_media_duration", 0.0),
+        )
+    except Exception as exc:
+        _set(job_id, status="error", step="Failed", error=str(exc))
+
+
 # ── Catalog API ──────────────────────────────────────────────────────────────
 
 @app.get("/api/catalog")
@@ -1232,7 +1485,7 @@ def api_catalog(search: str = "", limit: int = 50, offset: int = 0):
     total = count_songs(search=search)
     # Check that files still exist on disk
     for song in songs:
-        for key in ("video_path", "minus_path", "ass_path", "thumbnail_path"):
+        for key in ("video_path", "minus_path", "ass_path", "thumbnail_path", "cdg_path"):
             if song.get(key) and not Path(song[key]).exists():
                 song[key] = ""
     return {"songs": songs, "total": total}

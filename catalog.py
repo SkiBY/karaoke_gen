@@ -38,9 +38,15 @@ def init_db() -> None:
                 ass_path     TEXT DEFAULT '',
                 thumbnail_path TEXT DEFAULT '',
                 youtube_ready INTEGER DEFAULT 0,
-                lyrics       TEXT DEFAULT ''
+                lyrics       TEXT DEFAULT '',
+                cdg_path     TEXT DEFAULT ''
             )
         """)
+        # Migrate older databases that predate a column.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(songs)")}
+        for col in ("cdg_path",):
+            if col not in existing:
+                conn.execute(f"ALTER TABLE songs ADD COLUMN {col} TEXT DEFAULT ''")
         conn.commit()
         conn.close()
 

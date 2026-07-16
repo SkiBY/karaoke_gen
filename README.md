@@ -4,6 +4,7 @@ Local web app that takes a music track (file upload or URL from YouTube, Spotify
 - **`_karaoke.mp4`** — 1080p video with karaoke subtitles (word-by-word highlighting)
 - **`_minus.mp3`** — Instrumental (vocals removed)
 - **`_karaoke.ass`** — Raw ASS subtitle file for use in VLC, mpv, Aegisub, etc.
+- **`.cdg` + `.mp3` bundle** _(optional)_ — CD+G, the format real karaoke machines and MP3+G players use
 
 ## Stack
 
@@ -14,7 +15,9 @@ Local web app that takes a music track (file upload or URL from YouTube, Spotify
 | YouTube subtitle extraction | `yt-dlp --write-subs` |
 | Vocal separation | `demucs` (`htdemucs` model) |
 | Transcription | `faster-whisper` (CUDA `int8_float16` / CPU `int8`) |
+| Lyrics correction | custom `lyrics_correction.py` (anchor/gap alignment) |
 | ASS generation | custom `ass_gen.py` |
+| CD+G generation | custom `cdg_gen.py` (Pillow for glyph rasterisation) |
 | Video rendering | `ffmpeg` (libx264 + libass burn-in) |
 | Song catalog | SQLite (`work/catalog.db`) |
 | Web UI | FastAPI + vanilla JS |
@@ -69,6 +72,9 @@ Priority chain (highest to lowest):
 
 When synced lyrics (LRC format) are found, their line-level timestamps are preserved and used as segment anchors for better timing accuracy.
 
+#### Anchor-based lyrics correction
+When reference lyrics are available (pasted or fetched), the Whisper transcription is **corrected against them** instead of trusting Whisper's text. The two word streams are aligned; matching runs become **anchors** (Whisper's timing is kept, reference spelling is used) and the mismatching **gaps** between anchors are replaced with the reference words, their timing interpolated from the surrounding anchors. This is a dependency-free take on the approach from [nomadkaraoke/karaoke-gen](https://github.com/nomadkaraoke/karaoke-gen)'s `lyrics-transcriber`, and it survives Whisper segmenting the audio differently from how the lyrics are line-broken.
+
 Lyrics are displayed in the results UI and can be **edited and re-submitted** — the app re-runs transcription with the updated text (skips Demucs).
 
 ### Subtitle timing
@@ -92,6 +98,18 @@ Lyrics are displayed in the results UI and can be **edited and re-submitted** �
 - Auto-detects repeated lyric blocks (chorus/refrain)
 - Option to **keep** (default) or **remove** repeated chorus sections
 - When removed, only the first occurrence is kept
+
+### Interactive review (optional)
+Tick **"Review before rendering"** to pause the pipeline once the word-timed segments are ready — *before* the video is rendered — and open an in-browser editor:
+- **Fix wrong words** inline. If a line keeps the same word count (fixing one misheard word), the original per-word timing is preserved; otherwise the line's words are re-spread across its span.
+- **Adjust timing** by editing each line's start/end, or click **⇤** to set a line's start to the current playhead.
+- **Tap-sync**: play the instrumental and press <kbd>Space</kbd> (or click a line) as each line begins to capture its timing live.
+- **Delete** junk lines.
+
+Hitting **Render** commits the edits and produces the video in seconds — it re-runs only the subtitle + ffmpeg step, **not** Demucs or Whisper. (The lyrics editor and rating auto-retry still re-run transcription, since their job is to re-time against changed text.)
+
+### CD+G output (optional)
+Tick **"Also make CD+G"** on the create form to additionally produce a `.cdg` + `.mp3` bundle (downloaded as a ZIP with matching basenames — an MP3+G set). CD+G is the format real karaoke machines, hardware players, and desktop players (VLC, cdg players) understand. The generator renders the same word-timed data used for the ASS subtitles into a standards-compliant CD+G stream (50×18 grid of 6×12 tiles at 300 packets/sec) with a left-to-right character wipe as each word is sung.
 
 ### Song catalog
 - **Persistent SQLite database** — songs survive container restarts
