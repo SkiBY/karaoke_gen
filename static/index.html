@@ -255,6 +255,34 @@
     .btn-dl.dl-ass { border-color: rgba(196,90,255,.5); }
     .btn-dl.dl-minus { border-color: rgba(253,215,0,.4); color: var(--gold); }
     .btn-dl.dl-video { border-color: rgba(61,255,192,.4); color: var(--green); }
+    .btn-dl.dl-cdg { border-color: rgba(255,90,205,.5); color: var(--accent2); }
+
+    /* ── Review editor ── */
+    .rev-line {
+      display: flex; align-items: center; gap: .3rem;
+      padding: .25rem .4rem; border-radius: 7px;
+      border: 1px solid var(--border); background: rgba(255,255,255,.02);
+    }
+    .rev-line.tap-next { border-color: var(--accent2); background: rgba(255,90,205,.08); }
+    .rev-line input.rev-t {
+      width: 4.2rem; background: #0d0d1a; border: 1px solid var(--border);
+      border-radius: 6px; color: var(--muted); padding: .3rem .35rem;
+      font-size: .78rem; outline: none; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .rev-line input.rev-text {
+      flex: 1; min-width: 0; background: #0d0d1a; border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); padding: .3rem .5rem;
+      font-size: .85rem; outline: none;
+    }
+    .rev-line input:focus { border-color: var(--accent1); }
+    .rev-btn {
+      border: 1px solid var(--border); background: transparent; color: var(--muted);
+      border-radius: 6px; cursor: pointer; padding: .3rem .45rem; font-size: .8rem;
+      flex-shrink: 0; transition: all .15s;
+    }
+    .rev-btn:hover { border-color: var(--accent1); color: var(--text); }
+    .rev-btn.rev-del:hover { border-color: var(--red); color: var(--red); }
 
     .btn-reset {
       width: 100%;
@@ -450,6 +478,22 @@
     </label>
   </div>
 
+  <!-- CD+G output toggle -->
+  <div class="option-row" style="margin-top:1.2rem;">
+    <label for="make-cdg" style="color:var(--muted);font-size:.85rem;cursor:pointer;display:flex;align-items:center;gap:.5rem;">
+      <input type="checkbox" id="make-cdg" style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
+      Also make CD+G <span style="font-size:.78rem;">(.cdg + .mp3 bundle for real karaoke machines / players)</span>
+    </label>
+  </div>
+
+  <!-- Review before render toggle -->
+  <div class="option-row" style="margin-top:1.2rem;">
+    <label for="review-toggle" style="color:var(--muted);font-size:.85rem;cursor:pointer;display:flex;align-items:center;gap:.5rem;">
+      <input type="checkbox" id="review-toggle" style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
+      Review before rendering <span style="font-size:.78rem;">(fix words &amp; timing, then render instantly — no re-transcription)</span>
+    </label>
+  </div>
+
   <!-- Optional lyrics -->
   <div class="option-row" style="align-items:flex-start;flex-direction:column;gap:.4rem;margin-top:1.2rem;">
     <label for="lyrics-input" style="color:var(--muted);font-size:.85rem;">
@@ -493,6 +537,9 @@
       <a class="btn-dl dl-ass" id="dl-ass" href="#" download>
         &#127916; Subtitles (.ass)
       </a>
+      <a class="btn-dl dl-cdg" id="dl-cdg" href="#" download style="display:none;">
+        &#128191; CD+G (.cdg + .mp3)
+      </a>
     </div>
 
     <!-- Lyrics editor -->
@@ -532,6 +579,28 @@
   </div>
 
   <button class="btn-reset" id="btn-reset">&#8592; Start over</button>
+</div>
+
+<!-- Review / edit card -->
+<div class="card" id="review-section" style="display:none;">
+  <div class="results-title" style="color:var(--accent1);">&#9998; Review &amp; fix timing</div>
+  <p style="color:var(--muted);font-size:.82rem;text-align:center;margin-bottom:1rem;">
+    Fix any wrong words or timing, then render — no re-transcription needed.
+  </p>
+
+  <audio id="review-audio" controls style="width:100%;margin-bottom:.75rem;"></audio>
+
+  <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.75rem;">
+    <button id="btn-tap" class="ci-btn" style="border-color:var(--accent2);color:var(--accent2);">&#9201; Tap-sync: off</button>
+    <span id="tap-hint" style="font-size:.78rem;color:var(--muted);"></span>
+    <span style="flex:1;"></span>
+    <span id="review-time" style="font-size:.8rem;color:var(--muted);font-variant-numeric:tabular-nums;">0.00s</span>
+  </div>
+
+  <div id="review-lines" style="display:flex;flex-direction:column;gap:.35rem;max-height:46vh;overflow-y:auto;padding-right:.25rem;"></div>
+
+  <button id="btn-render" class="btn-generate" style="margin-top:1rem;">Render karaoke video</button>
+  <button class="btn-reset" id="btn-review-reset">&#8592; Start over</button>
 </div>
 
 <!-- Catalog card -->
@@ -610,6 +679,8 @@
     fd.append('static_video', displayMode === 'background' ? 'true' : 'false');
     fd.append('show_bg_lyrics', displayMode === 'both' ? 'true' : 'false');
     fd.append('keep_chorus', $('keep-chorus').checked ? 'true' : 'false');
+    fd.append('make_cdg', $('make-cdg').checked ? 'true' : 'false');
+    fd.append('review', $('review-toggle').checked ? 'true' : 'false');
     const videoBg = $('video-bg').value;
     fd.append('video_bg', videoBg);
     if ($('cover-input').files[0]) {
@@ -660,6 +731,7 @@
 
   function showProgress(isYoutube) {
     $('form-card').style.display = 'none';
+    $('review-section').style.display = 'none';
     $('progress-section').style.display = 'block';
     $('results-section').style.display = 'none';
     $('error-msg').style.display = 'none';
@@ -773,7 +845,11 @@
 
       $('step-label').textContent = job.step || '';
 
-      if (job.status === 'done') {
+      if (job.status === 'review') {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        showReview();
+      } else if (job.status === 'done') {
         clearInterval(pollTimer);
         pollTimer = null;
         markAllDone();
@@ -800,6 +876,13 @@
     if (!files.video) $('dl-video').style.opacity = '.3';
     if (!files.minus) $('dl-minus').style.opacity = '.3';
     if (!files.ass)   $('dl-ass').style.opacity   = '.3';
+    // CD+G is optional — only show the button when it was generated.
+    if (files.cdg) {
+      $('dl-cdg').href = `/api/jobs/${currentJobId}/download/cdg`;
+      $('dl-cdg').style.display = '';
+    } else {
+      $('dl-cdg').style.display = 'none';
+    }
     // Show lyrics
     const lyricsText = job.lyrics_text || '';
     $('lyrics-result').value = lyricsText;
@@ -908,6 +991,11 @@
     $('cover-upload-row').style.display = 'none';
     $('cover-input').value = '';
     $('keep-chorus').checked = true;
+    $('make-cdg').checked = false;
+    $('dl-cdg').style.display = 'none';
+    $('review-toggle').checked = false;
+    $('review-section').style.display = 'none';
+    try { $('review-audio').pause(); } catch (e) {}
     $('btn-go').disabled = false;
     $('form-card').style.display = '';
     $('progress-section').style.display = 'none';
@@ -1008,6 +1096,7 @@
             ${s.video_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/video" download>Video</a>` : ''}
             ${s.minus_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/minus" download>Minus</a>` : ''}
             ${s.ass_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/ass" download>Subs</a>` : ''}
+            ${s.cdg_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/cdg" download>CD+G</a>` : ''}
             <button class="ci-btn ci-yt" onclick="prepareYouTube('${s.job_id}', this)">Prepare YT</button>
             <button class="ci-btn ci-del" onclick="deleteSong('${s.job_id}')">Del</button>
           </div>
@@ -1109,6 +1198,131 @@
       $('btn-lyrics-save').disabled = false;
     }
   });
+
+  // ── Interactive review editor (Tier 1 + tap-sync) ──────────────────────────
+  let reviewData = [];   // [{start, end, text, words:[...]}]
+  let tapMode = false;
+  let tapIndex = 0;
+
+  async function showReview() {
+    $('form-card').style.display = 'none';
+    $('progress-section').style.display = 'none';
+    $('review-section').style.display = '';
+    const audio = $('review-audio');
+    audio.src = `/api/jobs/${currentJobId}/audio`;
+    audio.ontimeupdate = () => { $('review-time').textContent = audio.currentTime.toFixed(2) + 's'; };
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/segments`);
+      const data = await res.json();
+      reviewData = (data.segments || []).map(s => ({
+        start: +s.start || 0, end: +s.end || 0, text: s.text || '', words: s.words || [],
+      }));
+    } catch (e) { reviewData = []; }
+    tapMode = false; tapIndex = 0;
+    $('btn-tap').textContent = '⏱ Tap-sync: off';
+    $('tap-hint').textContent = '';
+    renderReviewLines();
+  }
+
+  function renderReviewLines() {
+    const box = $('review-lines');
+    box.innerHTML = '';
+    reviewData.forEach((line, i) => {
+      const row = document.createElement('div');
+      row.className = 'rev-line' + (tapMode && i === tapIndex ? ' tap-next' : '');
+      row.innerHTML =
+        '<button class="rev-btn" title="Play from here" data-act="play">▶</button>' +
+        '<input class="rev-t" type="number" step="0.05" data-f="start">' +
+        '<input class="rev-t" type="number" step="0.05" data-f="end">' +
+        '<input class="rev-text" type="text">' +
+        '<button class="rev-btn" title="Set start = playhead" data-act="mark">⇤</button>' +
+        '<button class="rev-btn rev-del" title="Delete line" data-act="del">✕</button>';
+      const sIn = row.querySelector('[data-f="start"]');
+      const eIn = row.querySelector('[data-f="end"]');
+      const tIn = row.querySelector('.rev-text');
+      sIn.value = line.start.toFixed(2);
+      eIn.value = line.end.toFixed(2);
+      tIn.value = line.text;
+      sIn.addEventListener('input', e => line.start = parseFloat(e.target.value) || 0);
+      eIn.addEventListener('input', e => line.end = parseFloat(e.target.value) || 0);
+      tIn.addEventListener('input', e => line.text = e.target.value);
+      row.querySelector('[data-act="play"]').addEventListener('click', () => {
+        const a = $('review-audio'); a.currentTime = line.start; a.play();
+      });
+      row.querySelector('[data-act="mark"]').addEventListener('click', () => {
+        line.start = +(+$('review-audio').currentTime).toFixed(2);
+        sIn.value = line.start.toFixed(2);
+      });
+      row.querySelector('[data-act="del"]').addEventListener('click', () => {
+        reviewData.splice(i, 1);
+        if (tapIndex > reviewData.length) tapIndex = reviewData.length;
+        renderReviewLines();
+      });
+      row.addEventListener('click', e => {
+        if (tapMode && !e.target.matches('input, button')) tapAt(i);
+      });
+      box.appendChild(row);
+    });
+  }
+
+  function tapAt(i) {
+    if (i == null) i = tapIndex;
+    if (i >= reviewData.length) return;
+    const t = +(+$('review-audio').currentTime).toFixed(2);
+    reviewData[i].start = t;
+    if (i > 0 && reviewData[i - 1].end < t) reviewData[i - 1].end = t;
+    if (reviewData[i].end <= t) reviewData[i].end = t + 1.0;
+    tapIndex = i + 1;
+    renderReviewLines();
+    const rows = $('review-lines').children;
+    if (rows[tapIndex]) rows[tapIndex].scrollIntoView({ block: 'nearest' });
+  }
+
+  $('btn-tap').addEventListener('click', () => {
+    tapMode = !tapMode; tapIndex = 0;
+    $('btn-tap').textContent = tapMode ? '⏱ Tap-sync: ON' : '⏱ Tap-sync: off';
+    $('tap-hint').textContent = tapMode ? 'Play audio, press Space (or click a line) as each line starts' : '';
+    if (tapMode) $('review-audio').play();
+    renderReviewLines();
+  });
+
+  document.addEventListener('keydown', e => {
+    if ($('review-section').style.display === 'none') return;
+    if (!tapMode || e.code !== 'Space') return;
+    if (e.target.matches('input, textarea')) return;
+    e.preventDefault();
+    tapAt(tapIndex);
+  });
+
+  $('btn-render').addEventListener('click', async () => {
+    if (!currentJobId) return;
+    $('btn-render').disabled = true;
+    try { $('review-audio').pause(); } catch (e) {}
+    const payload = { segments: reviewData.map(l => ({
+      start: l.start, end: l.end, text: l.text, words: l.words,
+    })) };
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.rendering) {
+        $('review-section').style.display = 'none';
+        $('progress-section').style.display = 'block';
+        $('results-section').style.display = 'none';
+        $('progress-bar').style.width = '82%';
+        lastActiveStepId = null;
+        startPolling();
+      }
+    } catch (e) {
+      alert('Render failed: ' + e.message);
+    }
+    $('btn-render').disabled = false;
+  });
+
+  $('btn-review-reset').addEventListener('click', () => $('btn-reset').click());
 </script>
 </body>
 </html>
