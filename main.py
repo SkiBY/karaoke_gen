@@ -29,9 +29,13 @@ init_db()
 FFMPEG = "/usr/bin/ffmpeg"
 
 
-def _ytdlp_common() -> list[str]:
-    """Shared yt-dlp flags. Cookie source is configurable so the app works
-    whether it runs as the desktop user or as root / in Docker:
+# JS runtime + remote challenge solver — always needed for current YouTube.
+_YTDLP_JS = ["--js-runtimes", "node", "--remote-components", "ejs:github"]
+
+
+def _ytdlp_cookies() -> list[str]:
+    """Cookie flags, configurable so the app works whether it runs as the
+    desktop user, as root, or in Docker:
 
       YTDLP_COOKIES        — path to an exported Netscape cookies.txt file (preferred)
       YTDLP_COOKIES_BROWSER — browser name for --cookies-from-browser (default: chromium)
@@ -39,14 +43,35 @@ def _ytdlp_common() -> list[str]:
     A cookies file is the portable choice: --cookies-from-browser only works when
     the process can read the browser profile of the user running it.
     """
-    flags = ["--js-runtimes", "node", "--remote-components", "ejs:github"]
     cookies_file = os.environ.get("YTDLP_COOKIES", "").strip()
     if cookies_file and Path(cookies_file).is_file():
-        flags += ["--cookies", cookies_file]
-    else:
-        browser = os.environ.get("YTDLP_COOKIES_BROWSER", "chromium").strip()
-        if browser and browser.lower() != "none":
-            flags += ["--cookies-from-browser", browser]
+        return ["--cookies", cookies_file]
+    browser = os.environ.get("YTDLP_COOKIES_BROWSER", "chromium").strip()
+    if browser and browser.lower() != "none":
+        return ["--cookies-from-browser", browser]
+    return []
+
+
+def _ytdlp_common() -> list[str]:
+    """JS flags + cookies — for auxiliary calls (title, subs, thumbnail, video)."""
+    return _YTDLP_JS + _ytdlp_cookies()
+
+
+# Ordered download strategies. YouTube now gates the default/web clients behind
+# a GVS PO Token (→ HTTP 403), and cookies can *trigger* that gating, so the
+# cookie-free tv_embedded client is tried first; cookies are only used as a
+# fallback for genuinely geo/age-restricted videos.
+_YTDLP_STRATEGIES = [
+    ("tv_embedded,default", False),  # works for most public videos, no PO token
+    ("default", True),               # cookies for geo/age-restricted content
+    ("tv_embedded,default", True),   # cookies + resilient client, last resort
+]
+
+
+def _ytdlp_strategy_flags(player_client: str, with_cookies: bool) -> list[str]:
+    flags = _YTDLP_JS + ["--extractor-args", f"youtube:player_client={player_client}"]
+    if with_cookies:
+        flags += _ytdlp_cookies()
     return flags
 
 # In-memory job store (replace with Redis for production)
@@ -533,11 +558,28 @@ def _download_spotify(url: str, job_dir: Path) -> tuple[str, str]:
 
 
 def _download_yt_dlp(url: str, job_dir: Path) -> tuple[str, str]:
-    """Download audio via yt-dlp (YouTube, SoundCloud, etc). Returns (audio_path, title)."""
-    output_tpl = str(job_dir / "input.%(ext)s")
-    _run(["yt-dlp", "-x", "--audio-format", "mp3", *_ytdlp_common(), "-o", output_tpl, url])
+    """Download audio via yt-dlp (YouTube, SoundCloud, etc). Returns (audio_path, title).
 
-    # Best-effort title
+    Tries the YouTube client/cookie strategies in order until one succeeds, so a
+    PO-token 403 on one client falls through to the next instead of failing the job.
+    """
+    output_tpl = str(job_dir / "input.%(ext)s")
+
+    last_err: Exception | None = None
+    for player_client, with_cookies in _YTDLP_STRATEGIES:
+        try:
+            _run(["yt-dlp", "-x", "--audio-format", "mp3",
+                  *_ytdlp_strategy_flags(player_client, with_cookies),
+                  "-o", output_tpl, url])
+            break
+        except Exception as exc:  # try the next strategy
+            last_err = exc
+            for f in job_dir.glob("input.*"):
+                f.unlink(missing_ok=True)
+    else:
+        raise last_err or RuntimeError("yt-dlp failed for all strategies")
+
+    # Best-effort title (cheap metadata call; client choice doesn't matter much)
     title = ""
     try:
         title = _run(["yt-dlp", "--get-title", "--no-playlist", *_ytdlp_common(), url]).strip()
@@ -553,8 +595,20 @@ def _download_yt_dlp(url: str, job_dir: Path) -> tuple[str, str]:
 def _download_yt_video(url: str, job_dir: Path) -> str:
     """Download full video from YouTube. Returns path to the video file."""
     output_tpl = str(job_dir / "original_video.%(ext)s")
-    _run(["yt-dlp", "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-          "--merge-output-format", "mp4", *_ytdlp_common(), "-o", output_tpl, url])
+    last_err: Exception | None = None
+    for player_client, with_cookies in _YTDLP_STRATEGIES:
+        try:
+            _run(["yt-dlp", "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+                  "--merge-output-format", "mp4",
+                  *_ytdlp_strategy_flags(player_client, with_cookies),
+                  "-o", output_tpl, url])
+            break
+        except Exception as exc:
+            last_err = exc
+            for f in job_dir.glob("original_video.*"):
+                f.unlink(missing_ok=True)
+    else:
+        raise last_err or RuntimeError("yt-dlp video download failed for all strategies")
     for f in job_dir.glob("original_video.*"):
         return str(f)
     return ""
