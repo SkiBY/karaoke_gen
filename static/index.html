@@ -357,6 +357,8 @@
     .ci-btn:hover { border-color: var(--accent1); color: var(--text); }
     .ci-btn.ci-yt { border-color: rgba(255,90,205,.4); color: var(--accent2); }
     .ci-btn.ci-yt:hover { background: rgba(255,90,205,.1); }
+    .ci-btn.ci-timing { border-color: rgba(196,90,255,.4); color: var(--accent1); }
+    .ci-btn.ci-timing:hover { background: rgba(196,90,255,.1); }
     .ci-btn.ci-del { border-color: rgba(255,90,90,.3); color: var(--red); }
     .ci-btn.ci-del:hover { background: rgba(255,90,90,.1); }
 
@@ -1098,6 +1100,7 @@
             ${s.minus_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/minus" download>Minus</a>` : ''}
             ${s.ass_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/ass" download>Subs</a>` : ''}
             ${s.cdg_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/cdg" download>CD+G</a>` : ''}
+            <button class="ci-btn ci-timing" onclick="openTimingFromCatalog('${s.job_id}')">&#9998; Timing</button>
             <button class="ci-btn ci-yt" onclick="prepareYouTube('${s.job_id}', this)">Prepare YT</button>
             <button class="ci-btn ci-del" onclick="deleteSong('${s.job_id}')">Del</button>
           </div>
@@ -1204,6 +1207,7 @@
   let reviewData = [];   // [{start, end, text, words:[...]}]
   let tapMode = false;
   let tapIndex = 0;
+  let reviewFromCatalog = false;
 
   async function showReview() {
     $('form-card').style.display = 'none';
@@ -1214,6 +1218,39 @@
     audio.ontimeupdate = () => { $('review-time').textContent = audio.currentTime.toFixed(2) + 's'; };
     try {
       const res = await fetch(`/api/jobs/${currentJobId}/segments`);
+      const data = await res.json();
+      reviewData = (data.segments || []).map(s => ({
+        start: +s.start || 0, end: +s.end || 0, text: s.text || '', words: s.words || [],
+      }));
+    } catch (e) { reviewData = []; }
+    tapMode = false; tapIndex = 0;
+    $('btn-tap').textContent = '⏱ Tap-sync: off';
+    $('tap-hint').textContent = '';
+    renderReviewLines();
+  }
+
+  async function openTimingFromCatalog(jobId) {
+    reviewFromCatalog = true;
+    currentJobId = jobId;
+    $('catalog-card').style.display = 'none';
+    $('nav-catalog').classList.add('active');
+    $('nav-create').classList.remove('active');
+    $('form-card').style.display = 'none';
+    $('progress-section').style.display = 'none';
+    $('review-section').style.display = '';
+    const audio = $('review-audio');
+    audio.src = `/api/jobs/${jobId}/audio`;
+    audio.ontimeupdate = () => { $('review-time').textContent = audio.currentTime.toFixed(2) + 's'; };
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/segments`);
+      if (!res.ok) {
+        reviewData = [];
+        $('review-lines').innerHTML = '<div style="color:var(--muted);text-align:center;padding:1.5rem;">No timing data for this song.<br><span style="font-size:.85rem;">Re-create it with <em>Review before rendering</em> enabled to get an editable timing file.</span></div>';
+        tapMode = false; tapIndex = 0;
+        $('btn-tap').textContent = '⏱ Tap-sync: off';
+        $('tap-hint').textContent = '';
+        return;
+      }
       const data = await res.json();
       reviewData = (data.segments || []).map(s => ({
         start: +s.start || 0, end: +s.end || 0, text: s.text || '', words: s.words || [],
@@ -1334,7 +1371,17 @@
     $('btn-render').disabled = false;
   });
 
-  $('btn-review-reset').addEventListener('click', () => $('btn-reset').click());
+  $('btn-review-reset').addEventListener('click', () => {
+    if (reviewFromCatalog) {
+      reviewFromCatalog = false;
+      currentJobId = null;
+      try { $('review-audio').pause(); } catch (e) {}
+      $('review-section').style.display = 'none';
+      showView('catalog');
+    } else {
+      $('btn-reset').click();
+    }
+  });
 </script>
 </body>
 </html>
