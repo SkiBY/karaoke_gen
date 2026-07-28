@@ -27,7 +27,27 @@ from catalog import init_db, upsert_song, get_song, list_songs, count_songs, del
 init_db()
 
 FFMPEG = "/usr/bin/ffmpeg"
-YTDLP_COMMON = ["--js-runtimes", "node", "--cookies-from-browser", "chromium", "--remote-components", "ejs:github"]
+
+
+def _ytdlp_common() -> list[str]:
+    """Shared yt-dlp flags. Cookie source is configurable so the app works
+    whether it runs as the desktop user or as root / in Docker:
+
+      YTDLP_COOKIES        — path to an exported Netscape cookies.txt file (preferred)
+      YTDLP_COOKIES_BROWSER — browser name for --cookies-from-browser (default: chromium)
+
+    A cookies file is the portable choice: --cookies-from-browser only works when
+    the process can read the browser profile of the user running it.
+    """
+    flags = ["--js-runtimes", "node", "--remote-components", "ejs:github"]
+    cookies_file = os.environ.get("YTDLP_COOKIES", "").strip()
+    if cookies_file and Path(cookies_file).exists():
+        flags += ["--cookies", cookies_file]
+    else:
+        browser = os.environ.get("YTDLP_COOKIES_BROWSER", "chromium").strip()
+        if browser and browser.lower() != "none":
+            flags += ["--cookies-from-browser", browser]
+    return flags
 
 # In-memory job store (replace with Redis for production)
 jobs: Dict[str, Dict[str, Any]] = {}
@@ -458,7 +478,7 @@ def _fetch_yt_subtitles(url: str, job_dir: Path) -> str:
         sub_tpl = str(job_dir / "subs.%(ext)s")
         _run([
             "yt-dlp", "--skip-download",
-            *YTDLP_COMMON,
+            *_ytdlp_common(),
             "--write-subs", "--write-auto-subs",
             "--sub-langs", "ru,be,uk,en",
             "--sub-format", "srv3/vtt/srt/best",
@@ -498,12 +518,12 @@ def _download_spotify(url: str, job_dir: Path) -> tuple[str, str]:
 def _download_yt_dlp(url: str, job_dir: Path) -> tuple[str, str]:
     """Download audio via yt-dlp (YouTube, SoundCloud, etc). Returns (audio_path, title)."""
     output_tpl = str(job_dir / "input.%(ext)s")
-    _run(["yt-dlp", "-x", "--audio-format", "mp3", *YTDLP_COMMON, "-o", output_tpl, url])
+    _run(["yt-dlp", "-x", "--audio-format", "mp3", *_ytdlp_common(), "-o", output_tpl, url])
 
     # Best-effort title
     title = ""
     try:
-        title = _run(["yt-dlp", "--get-title", "--no-playlist", *YTDLP_COMMON, url]).strip()
+        title = _run(["yt-dlp", "--get-title", "--no-playlist", *_ytdlp_common(), url]).strip()
     except Exception:
         pass
 
@@ -517,7 +537,7 @@ def _download_yt_video(url: str, job_dir: Path) -> str:
     """Download full video from YouTube. Returns path to the video file."""
     output_tpl = str(job_dir / "original_video.%(ext)s")
     _run(["yt-dlp", "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-          "--merge-output-format", "mp4", *YTDLP_COMMON, "-o", output_tpl, url])
+          "--merge-output-format", "mp4", *_ytdlp_common(), "-o", output_tpl, url])
     for f in job_dir.glob("original_video.*"):
         return str(f)
     return ""
@@ -527,7 +547,7 @@ def _fetch_yt_thumbnail(url: str, job_dir: Path) -> str:
     """Download YouTube thumbnail. Returns path or ''."""
     try:
         _run(["yt-dlp", "--skip-download", "--write-thumbnail",
-              "--convert-thumbnails", "jpg", *YTDLP_COMMON,
+              "--convert-thumbnails", "jpg", *_ytdlp_common(),
               "-o", str(job_dir / "yt_thumb.%(ext)s"), url])
         for f in job_dir.glob("yt_thumb*.jpg"):
             return str(f)
