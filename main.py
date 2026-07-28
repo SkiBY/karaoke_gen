@@ -27,6 +27,7 @@ from catalog import init_db, upsert_song, get_song, list_songs, count_songs, del
 init_db()
 
 FFMPEG = "/usr/bin/ffmpeg"
+YTDLP_COMMON = ["--js-runtimes", "node", "--cookies-from-browser", "chromium", "--remote-components", "ejs:github"]
 
 # In-memory job store (replace with Redis for production)
 jobs: Dict[str, Dict[str, Any]] = {}
@@ -457,6 +458,7 @@ def _fetch_yt_subtitles(url: str, job_dir: Path) -> str:
         sub_tpl = str(job_dir / "subs.%(ext)s")
         _run([
             "yt-dlp", "--skip-download",
+            *YTDLP_COMMON,
             "--write-subs", "--write-auto-subs",
             "--sub-langs", "ru,be,uk,en",
             "--sub-format", "srv3/vtt/srt/best",
@@ -496,12 +498,12 @@ def _download_spotify(url: str, job_dir: Path) -> tuple[str, str]:
 def _download_yt_dlp(url: str, job_dir: Path) -> tuple[str, str]:
     """Download audio via yt-dlp (YouTube, SoundCloud, etc). Returns (audio_path, title)."""
     output_tpl = str(job_dir / "input.%(ext)s")
-    _run(["yt-dlp", "-x", "--audio-format", "mp3", "-o", output_tpl, url])
+    _run(["yt-dlp", "-x", "--audio-format", "mp3", *YTDLP_COMMON, "-o", output_tpl, url])
 
     # Best-effort title
     title = ""
     try:
-        title = _run(["yt-dlp", "--get-title", "--no-playlist", url]).strip()
+        title = _run(["yt-dlp", "--get-title", "--no-playlist", *YTDLP_COMMON, url]).strip()
     except Exception:
         pass
 
@@ -515,7 +517,7 @@ def _download_yt_video(url: str, job_dir: Path) -> str:
     """Download full video from YouTube. Returns path to the video file."""
     output_tpl = str(job_dir / "original_video.%(ext)s")
     _run(["yt-dlp", "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-          "--merge-output-format", "mp4", "-o", output_tpl, url])
+          "--merge-output-format", "mp4", *YTDLP_COMMON, "-o", output_tpl, url])
     for f in job_dir.glob("original_video.*"):
         return str(f)
     return ""
@@ -525,7 +527,7 @@ def _fetch_yt_thumbnail(url: str, job_dir: Path) -> str:
     """Download YouTube thumbnail. Returns path or ''."""
     try:
         _run(["yt-dlp", "--skip-download", "--write-thumbnail",
-              "--convert-thumbnails", "jpg",
+              "--convert-thumbnails", "jpg", *YTDLP_COMMON,
               "-o", str(job_dir / "yt_thumb.%(ext)s"), url])
         for f in job_dir.glob("yt_thumb*.jpg"):
             return str(f)
@@ -1408,15 +1410,18 @@ def _json_to_segments(data: list):
 
 @app.get("/api/jobs/{job_id}/segments")
 def get_segments(job_id: str):
-    """Return the timed segments awaiting review, for the editor UI."""
-    if job_id not in jobs:
-        raise HTTPException(404, "Job not found")
+    """Return the timed segments for the review editor.
+    Works for both active in-memory jobs and catalog entries loaded from disk."""
     seg_file = WORK_DIR / job_id / "segments.json"
     if not seg_file.exists():
         raise HTTPException(404, "No segments to review")
     import json  # noqa: PLC0415
     segments = json.loads(seg_file.read_text(encoding="utf-8"))
-    job = jobs[job_id]
+    job = jobs.get(job_id, {})
+    if not job:
+        song = get_song(job_id)
+        if song:
+            job = {"title": song.get("title", "track"), "files": {"minus": song.get("minus_path", "")}}
     return {
         "segments": segments,
         "title": job.get("title", "track"),
@@ -1424,6 +1429,72 @@ def get_segments(job_id: str):
         "media_duration": job.get("_media_duration", 0.0),
         "minus_available": bool(job.get("files", {}).get("minus")),
     }
+
+
+@app.post("/api/jobs/{job_id}/retranscribe")
+async def retranscribe_job(job_id: str, background_tasks: BackgroundTasks,
+                           model: str = "medium", language: str = "auto"):
+    """Re-run only the Whisper transcription step on an existing job's audio.
+    Skips re-download and Demucs. Saves segments.json and sets status=review."""
+    song = get_song(job_id)
+    if not song:
+        raise HTTPException(404, "Song not found in catalog")
+
+    job_dir = WORK_DIR / job_id
+
+    vocals_candidates = list(job_dir.rglob("vocals.wav"))
+    vocals_wav = str(vocals_candidates[0]) if vocals_candidates else None
+
+    minus_candidates = list(job_dir.glob("*_minus.mp3"))
+    minus_path = str(minus_candidates[0]) if minus_candidates else song.get("minus_path") or ""
+
+    input_candidates = list(job_dir.glob("input.*"))
+    input_path = str(input_candidates[0]) if input_candidates else (vocals_wav or minus_path)
+
+    if not input_path:
+        raise HTTPException(400, "No audio source found for this job")
+
+    title = f"{song['artist']} - {song['title']}" if song.get("artist") else song.get("title", "track")
+    safe = re.sub(r'[\\/*?:"<>|]', "", title).strip()
+
+    jobs[job_id] = {
+        "status": "running",
+        "step": "Starting retranscription...",
+        "pct": 0,
+        "files": {"minus": minus_path, "video": song.get("video_path", ""), "ass": song.get("ass_path", "")},
+        "title": song.get("title", "track"),
+        "_review": True,
+        "_word_timing": True,
+        "_model": model,
+        "_language": language,
+    }
+
+    background_tasks.add_task(
+        _retranscribe_task, job_id, input_path, vocals_wav, minus_path,
+        model, language, safe, title, job_dir,
+    )
+    return {"ok": True}
+
+
+def _retranscribe_task(job_id: str, input_path: str, vocals_wav, minus_path: str,
+                       model: str, language: str, safe: str, title: str, job_dir) -> None:
+    try:
+        _run_transcription_and_render(
+            job_id=job_id,
+            input_path=input_path,
+            vocals_wav=vocals_wav,
+            minus_path=minus_path,
+            model=model,
+            language=language,
+            lyrics_hint="",
+            lyrics="",
+            safe=safe,
+            title=title,
+            job_dir=Path(job_dir),
+            word_timing=True,
+        )
+    except Exception as exc:
+        _set(job_id, status="error", step="Retranscription failed", error=str(exc))
 
 
 class RenderPayload(BaseModel):

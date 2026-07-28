@@ -54,14 +54,15 @@ def _fmt_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def _segment_to_dialogue(segment, word_timing: bool = True) -> str:
+def _segment_to_dialogue(segment, word_timing: bool = True, effective_end: float = None) -> str:
     """Build one ASS Dialogue line from a faster-whisper segment.
 
     word_timing=True  — word-by-word \\kf highlighting
     word_timing=False — plain text, whole line appears at once
+    effective_end     — override segment.end (used to prevent overlapping display windows)
     """
     start = _fmt_time(segment.start)
-    end = _fmt_time(segment.end)
+    end = _fmt_time(effective_end if effective_end is not None else segment.end)
 
     if not word_timing:
         text = segment.text.strip()
@@ -146,9 +147,13 @@ def generate_ass(segments, output_path: str, word_timing: bool = True,
             text = r"\N".join(bg_lines)
             lines.append(f"Dialogue: 0,{start},{end},BgLyrics,,0,0,0,,{text}\n")
 
-    # Karaoke lines
-    for seg in segments:
-        line = _segment_to_dialogue(seg, word_timing=word_timing)
+    # Karaoke lines — cap each segment's display end to the next segment's start
+    # to prevent multiple lines showing simultaneously (Whisper end times are often inflated).
+    seg_list = list(segments)
+    for i, seg in enumerate(seg_list):
+        next_start = seg_list[i + 1].start if i + 1 < len(seg_list) else None
+        effective_end = min(seg.end, next_start) if next_start is not None else seg.end
+        line = _segment_to_dialogue(seg, word_timing=word_timing, effective_end=effective_end)
         if line:
             lines.append(line + "\n")
 

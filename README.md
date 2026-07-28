@@ -12,7 +12,7 @@ Local web app that takes a music track (file upload or URL from YouTube, Spotify
 
 | Step | Tool |
 |---|---|
-| YouTube / SoundCloud / Yandex Music download | `yt-dlp` |
+| YouTube / SoundCloud / Yandex Music download | `yt-dlp` (Chromium cookies + EJS solver for geo-restricted content) |
 | Spotify download | `spotdl` (isolated via pipx) |
 | YouTube subtitle extraction | `yt-dlp --write-subs` |
 | Vocal separation | `demucs` (`htdemucs` model) |
@@ -83,6 +83,7 @@ Lyrics are displayed in the results UI and can be **edited and re-submitted** �
 - **Character-weighted word distribution** — longer words get proportionally more time (not equal per word)
 - **Whisper-to-lyrics word alignment** — when both Whisper timestamps and lyrics exist, a greedy alignment transfers Whisper's timing to the correct lyric words
 - **LRC timestamp preservation** — synced lyrics timestamps used as line-level anchors
+- **Segment end-time capping** — each segment's display window is capped to the next segment's start, preventing Whisper's inflated end times from stacking multiple lines on screen simultaneously
 - **Minimum word duration** — 150ms floor to prevent flicker
 - **Gap threshold** — gaps under 100ms are absorbed into word duration
 
@@ -106,9 +107,15 @@ Tick **"Review before rendering"** to pause the pipeline once the word-timed seg
 - **Fix wrong words** inline. If a line keeps the same word count (fixing one misheard word), the original per-word timing is preserved; otherwise the line's words are re-spread across its span.
 - **Adjust timing** by editing each line's start/end, or click **⇤** to set a line's start to the current playhead.
 - **Tap-sync**: play the instrumental and press <kbd>Space</kbd> (or click a line) as each line begins to capture its timing live.
+- **Insert lines** with the **＋** button between any two segments.
 - **Delete** junk lines.
 
 Hitting **Render** commits the edits and produces the video in seconds — it re-runs only the subtitle + ffmpeg step, **not** Demucs or Whisper. (The lyrics editor and rating auto-retry still re-run transcription, since their job is to re-time against changed text.)
+
+### Re-edit timing from catalog
+Every song in the catalog has a **✎ Timing** button that re-opens the review editor for that song at any time — no re-transcription needed.
+
+If the song was originally created without "Review before rendering" (no `segments.json` on disk), the editor shows a **⚡ Generate timing** panel with model and language pickers. Clicking it runs only the Whisper step on the already-separated audio (skips re-download and Demucs) and opens the editor as soon as transcription finishes.
 
 ### CD+G output (optional)
 Tick **"Also make CD+G"** on the create form to additionally produce a `.cdg` + `.mp3` bundle (downloaded as a ZIP with matching basenames — an MP3+G set). CD+G is the format real karaoke machines, hardware players, and desktop players (VLC, cdg players) understand. The generator renders the same word-timed data used for the ASS subtitles into a standards-compliant CD+G stream (50×18 grid of 6×12 tiles at 300 packets/sec) with a left-to-right character wipe as each word is sung.
@@ -116,6 +123,8 @@ Tick **"Also make CD+G"** on the create form to additionally produce a `.cdg` + 
 ### Song catalog
 - **Persistent SQLite database** — songs survive container restarts
 - **Catalog UI** — browse, search, download, delete past songs
+- **✎ Timing** — re-open the review editor for any song directly from the catalog
+- **⚡ Generate timing** — re-run Whisper on existing audio if segments were not saved (skips Demucs)
 - **Prepare for YouTube** — generates thumbnail (1280x720), metadata JSON (title, description, tags), and bundles everything into a ZIP
 
 ### Hallucination filtering

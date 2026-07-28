@@ -1245,7 +1245,27 @@
       const res = await fetch(`/api/jobs/${jobId}/segments`);
       if (!res.ok) {
         reviewData = [];
-        $('review-lines').innerHTML = '<div style="color:var(--muted);text-align:center;padding:1.5rem;">No timing data for this song.<br><span style="font-size:.85rem;">Re-create it with <em>Review before rendering</em> enabled to get an editable timing file.</span></div>';
+        $('review-lines').innerHTML = `
+          <div style="text-align:center;padding:1.5rem;">
+            <div style="color:var(--muted);margin-bottom:1rem;font-size:.9rem;">No timing data for this song — generate it now (uses existing audio, skips re-download &amp; separation).</div>
+            <div style="display:flex;gap:.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:.75rem;">
+              <select id="retrans-model" style="background:#0d0d1a;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:.35rem .6rem;font-size:.85rem;">
+                <option value="medium">medium</option>
+                <option value="large-v2">large-v2</option>
+                <option value="small">small</option>
+                <option value="tiny">tiny</option>
+              </select>
+              <select id="retrans-lang" style="background:#0d0d1a;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:.35rem .6rem;font-size:.85rem;">
+                <option value="auto">auto-detect</option>
+                <option value="be">Belarusian</option>
+                <option value="ru">Russian</option>
+                <option value="uk">Ukrainian</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+            <button class="btn-generate" id="btn-retranscribe" style="font-size:.9rem;padding:.5rem 1.5rem;">&#9889; Generate timing</button>
+          </div>`;
+        document.getElementById('btn-retranscribe').addEventListener('click', () => retranscribeFromCatalog(jobId));
         tapMode = false; tapIndex = 0;
         $('btn-tap').textContent = '⏱ Tap-sync: off';
         $('tap-hint').textContent = '';
@@ -1260,6 +1280,50 @@
     $('btn-tap').textContent = '⏱ Tap-sync: off';
     $('tap-hint').textContent = '';
     renderReviewLines();
+  }
+
+  async function retranscribeFromCatalog(jobId) {
+    const model = (document.getElementById('retrans-model') || {}).value || 'medium';
+    const lang  = (document.getElementById('retrans-lang')  || {}).value || 'auto';
+    const btn = document.getElementById('btn-retranscribe');
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/retranscribe?model=${encodeURIComponent(model)}&language=${encodeURIComponent(lang)}`, { method: 'POST' });
+      if (!res.ok) {
+        if (btn) { btn.textContent = 'Failed'; btn.disabled = false; }
+        return;
+      }
+    } catch (e) {
+      if (btn) { btn.textContent = 'Failed'; btn.disabled = false; }
+      return;
+    }
+
+    $('review-lines').innerHTML = '<div style="text-align:center;padding:2rem;color:var(--muted);">Transcribing… this may take a minute.</div>';
+
+    const pollId = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        const job = await r.json();
+        if (job.status === 'review') {
+          clearInterval(pollId);
+          const segRes = await fetch(`/api/jobs/${jobId}/segments`);
+          const data = await segRes.json();
+          reviewData = (data.segments || []).map(s => ({
+            start: +s.start || 0, end: +s.end || 0, text: s.text || '', words: s.words || [],
+          }));
+          tapMode = false; tapIndex = 0;
+          $('btn-tap').textContent = '⏱ Tap-sync: off';
+          $('tap-hint').textContent = '';
+          renderReviewLines();
+        } else if (job.status === 'error') {
+          clearInterval(pollId);
+          $('review-lines').innerHTML = `<div style="color:var(--red);text-align:center;padding:1rem;">Failed: ${job.error || 'unknown error'}</div>`;
+        } else {
+          $('review-lines').innerHTML = `<div style="text-align:center;padding:2rem;color:var(--muted);">${job.step || 'Transcribing…'}</div>`;
+        }
+      } catch (e) {}
+    }, 2000);
   }
 
   function renderReviewLines() {
