@@ -28,6 +28,27 @@ init_db()
 
 FFMPEG = "/usr/bin/ffmpeg"
 
+
+def _ytdlp_common() -> list[str]:
+    """Shared yt-dlp flags. Cookie source is configurable so the app works
+    whether it runs as the desktop user or as root / in Docker:
+
+      YTDLP_COOKIES        — path to an exported Netscape cookies.txt file (preferred)
+      YTDLP_COOKIES_BROWSER — browser name for --cookies-from-browser (default: chromium)
+
+    A cookies file is the portable choice: --cookies-from-browser only works when
+    the process can read the browser profile of the user running it.
+    """
+    flags = ["--js-runtimes", "node", "--remote-components", "ejs:github"]
+    cookies_file = os.environ.get("YTDLP_COOKIES", "").strip()
+    if cookies_file and Path(cookies_file).is_file():
+        flags += ["--cookies", cookies_file]
+    else:
+        browser = os.environ.get("YTDLP_COOKIES_BROWSER", "chromium").strip()
+        if browser and browser.lower() != "none":
+            flags += ["--cookies-from-browser", browser]
+    return flags
+
 # In-memory job store (replace with Redis for production)
 jobs: Dict[str, Dict[str, Any]] = {}
 
@@ -36,11 +57,28 @@ def _set(job_id: str, **kwargs) -> None:
     jobs[job_id].update(kwargs)
 
 
+def _clean_error(stderr: str) -> str:
+    """Extract the meaningful failure from noisy tool stderr.
+
+    Drops deprecation notices and warnings so the surfaced error is the
+    actual cause (e.g. the yt-dlp ``ERROR:`` line) rather than a Python
+    version deprecation banner that has nothing to do with the failure.
+    """
+    lines = [l.rstrip() for l in stderr.splitlines() if l.strip()]
+    noise = ("deprecated feature", "warning:", "deprecat")
+    errors = [l for l in lines if l.lower().lstrip().startswith("error")]
+    if errors:
+        return "\n".join(errors)
+    signal = [l for l in lines if not any(l.lower().lstrip().startswith(n) for n in noise)]
+    return "\n".join(signal or lines)
+
+
 def _run(cmd: list, **kwargs) -> str:
-    """Run a subprocess; raise RuntimeError with stderr on failure."""
+    """Run a subprocess; raise RuntimeError with the cleaned stderr on failure."""
     result = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr[-3000:] or result.stdout[-3000:])
+        raw = result.stderr or result.stdout
+        raise RuntimeError(_clean_error(raw)[-3000:] or raw[-3000:])
     return result.stdout
 
 
@@ -457,6 +495,7 @@ def _fetch_yt_subtitles(url: str, job_dir: Path) -> str:
         sub_tpl = str(job_dir / "subs.%(ext)s")
         _run([
             "yt-dlp", "--skip-download",
+            *_ytdlp_common(),
             "--write-subs", "--write-auto-subs",
             "--sub-langs", "ru,be,uk,en",
             "--sub-format", "srv3/vtt/srt/best",
@@ -496,12 +535,12 @@ def _download_spotify(url: str, job_dir: Path) -> tuple[str, str]:
 def _download_yt_dlp(url: str, job_dir: Path) -> tuple[str, str]:
     """Download audio via yt-dlp (YouTube, SoundCloud, etc). Returns (audio_path, title)."""
     output_tpl = str(job_dir / "input.%(ext)s")
-    _run(["yt-dlp", "-x", "--audio-format", "mp3", "-o", output_tpl, url])
+    _run(["yt-dlp", "-x", "--audio-format", "mp3", *_ytdlp_common(), "-o", output_tpl, url])
 
     # Best-effort title
     title = ""
     try:
-        title = _run(["yt-dlp", "--get-title", "--no-playlist", url]).strip()
+        title = _run(["yt-dlp", "--get-title", "--no-playlist", *_ytdlp_common(), url]).strip()
     except Exception:
         pass
 
@@ -515,7 +554,7 @@ def _download_yt_video(url: str, job_dir: Path) -> str:
     """Download full video from YouTube. Returns path to the video file."""
     output_tpl = str(job_dir / "original_video.%(ext)s")
     _run(["yt-dlp", "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-          "--merge-output-format", "mp4", "-o", output_tpl, url])
+          "--merge-output-format", "mp4", *_ytdlp_common(), "-o", output_tpl, url])
     for f in job_dir.glob("original_video.*"):
         return str(f)
     return ""
@@ -525,7 +564,7 @@ def _fetch_yt_thumbnail(url: str, job_dir: Path) -> str:
     """Download YouTube thumbnail. Returns path or ''."""
     try:
         _run(["yt-dlp", "--skip-download", "--write-thumbnail",
-              "--convert-thumbnails", "jpg",
+              "--convert-thumbnails", "jpg", *_ytdlp_common(),
               "-o", str(job_dir / "yt_thumb.%(ext)s"), url])
         for f in job_dir.glob("yt_thumb*.jpg"):
             return str(f)
@@ -1408,15 +1447,18 @@ def _json_to_segments(data: list):
 
 @app.get("/api/jobs/{job_id}/segments")
 def get_segments(job_id: str):
-    """Return the timed segments awaiting review, for the editor UI."""
-    if job_id not in jobs:
-        raise HTTPException(404, "Job not found")
+    """Return the timed segments for the review editor.
+    Works for both active in-memory jobs and catalog entries loaded from disk."""
     seg_file = WORK_DIR / job_id / "segments.json"
     if not seg_file.exists():
         raise HTTPException(404, "No segments to review")
     import json  # noqa: PLC0415
     segments = json.loads(seg_file.read_text(encoding="utf-8"))
-    job = jobs[job_id]
+    job = jobs.get(job_id, {})
+    if not job:
+        song = get_song(job_id)
+        if song:
+            job = {"title": song.get("title", "track"), "files": {"minus": song.get("minus_path", "")}}
     return {
         "segments": segments,
         "title": job.get("title", "track"),
@@ -1424,6 +1466,72 @@ def get_segments(job_id: str):
         "media_duration": job.get("_media_duration", 0.0),
         "minus_available": bool(job.get("files", {}).get("minus")),
     }
+
+
+@app.post("/api/jobs/{job_id}/retranscribe")
+async def retranscribe_job(job_id: str, background_tasks: BackgroundTasks,
+                           model: str = "medium", language: str = "auto"):
+    """Re-run only the Whisper transcription step on an existing job's audio.
+    Skips re-download and Demucs. Saves segments.json and sets status=review."""
+    song = get_song(job_id)
+    if not song:
+        raise HTTPException(404, "Song not found in catalog")
+
+    job_dir = WORK_DIR / job_id
+
+    vocals_candidates = list(job_dir.rglob("vocals.wav"))
+    vocals_wav = str(vocals_candidates[0]) if vocals_candidates else None
+
+    minus_candidates = list(job_dir.glob("*_minus.mp3"))
+    minus_path = str(minus_candidates[0]) if minus_candidates else song.get("minus_path") or ""
+
+    input_candidates = list(job_dir.glob("input.*"))
+    input_path = str(input_candidates[0]) if input_candidates else (vocals_wav or minus_path)
+
+    if not input_path:
+        raise HTTPException(400, "No audio source found for this job")
+
+    title = f"{song['artist']} - {song['title']}" if song.get("artist") else song.get("title", "track")
+    safe = re.sub(r'[\\/*?:"<>|]', "", title).strip()
+
+    jobs[job_id] = {
+        "status": "running",
+        "step": "Starting retranscription...",
+        "pct": 0,
+        "files": {"minus": minus_path, "video": song.get("video_path", ""), "ass": song.get("ass_path", "")},
+        "title": song.get("title", "track"),
+        "_review": True,
+        "_word_timing": True,
+        "_model": model,
+        "_language": language,
+    }
+
+    background_tasks.add_task(
+        _retranscribe_task, job_id, input_path, vocals_wav, minus_path,
+        model, language, safe, title, job_dir,
+    )
+    return {"ok": True}
+
+
+def _retranscribe_task(job_id: str, input_path: str, vocals_wav, minus_path: str,
+                       model: str, language: str, safe: str, title: str, job_dir) -> None:
+    try:
+        _run_transcription_and_render(
+            job_id=job_id,
+            input_path=input_path,
+            vocals_wav=vocals_wav,
+            minus_path=minus_path,
+            model=model,
+            language=language,
+            lyrics_hint="",
+            lyrics="",
+            safe=safe,
+            title=title,
+            job_dir=Path(job_dir),
+            word_timing=True,
+        )
+    except Exception as exc:
+        _set(job_id, status="error", step="Retranscription failed", error=str(exc))
 
 
 class RenderPayload(BaseModel):

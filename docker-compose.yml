@@ -6,8 +6,14 @@ services:
     volumes:
       - ./work:/app/work          # job outputs
       - model-cache:/root/.cache  # whisper + demucs model weights
+      # yt-dlp cookies: set YTDLP_COOKIES_FILE to a host cookies.txt to enable
+      # geo-restricted / age-gated downloads. Defaults to /dev/null (no cookies).
+      # Mounted read-write so yt-dlp can refresh rotated cookies back to the file.
+      - ${YTDLP_COOKIES_FILE:-/dev/null}:/app/yt_cookies.txt
     environment:
       - WHISPER_DEVICE=${WHISPER_DEVICE:-cuda}
+      - YTDLP_COOKIES=/app/yt_cookies.txt
+      - YTDLP_COOKIES_BROWSER=none   # no browser inside the container
     restart: unless-stopped
     deploy:
       resources:

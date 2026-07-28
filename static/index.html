@@ -357,6 +357,8 @@
     .ci-btn:hover { border-color: var(--accent1); color: var(--text); }
     .ci-btn.ci-yt { border-color: rgba(255,90,205,.4); color: var(--accent2); }
     .ci-btn.ci-yt:hover { background: rgba(255,90,205,.1); }
+    .ci-btn.ci-timing { border-color: rgba(196,90,255,.4); color: var(--accent1); }
+    .ci-btn.ci-timing:hover { background: rgba(196,90,255,.1); }
     .ci-btn.ci-del { border-color: rgba(255,90,90,.3); color: var(--red); }
     .ci-btn.ci-del:hover { background: rgba(255,90,90,.1); }
 
@@ -449,7 +451,7 @@
   <!-- Word timing toggle -->
   <div class="option-row" style="margin-top:1.2rem;">
     <label for="word-timing" style="color:var(--muted);font-size:.85rem;cursor:pointer;display:flex;align-items:center;gap:.5rem;">
-      <input type="checkbox" id="word-timing" checked style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
+      <input type="checkbox" id="word-timing" style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
       Word-by-word timing <span style="font-size:.78rem;">(highlight each word as it's sung)</span>
     </label>
   </div>
@@ -490,7 +492,7 @@
   <!-- Review before render toggle -->
   <div class="option-row" style="margin-top:1.2rem;">
     <label for="review-toggle" style="color:var(--muted);font-size:.85rem;cursor:pointer;display:flex;align-items:center;gap:.5rem;">
-      <input type="checkbox" id="review-toggle" style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
+      <input type="checkbox" id="review-toggle" checked style="width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent1);">
       Review before rendering <span style="font-size:.78rem;">(fix words &amp; timing, then render instantly — no re-transcription)</span>
     </label>
   </div>
@@ -986,7 +988,7 @@
     $('file-name').textContent = '';
     $('yt-url').value = '';
     $('lyrics-input').value = '';
-    $('word-timing').checked = true;
+    $('word-timing').checked = false;
     $('display-mode').value = 'subtitles';
     $('video-bg').value = 'color';
     $('cover-upload-row').style.display = 'none';
@@ -994,7 +996,7 @@
     $('keep-chorus').checked = true;
     $('make-cdg').checked = false;
     $('dl-cdg').style.display = 'none';
-    $('review-toggle').checked = false;
+    $('review-toggle').checked = true;
     $('review-section').style.display = 'none';
     try { $('review-audio').pause(); } catch (e) {}
     $('btn-go').disabled = false;
@@ -1031,12 +1033,13 @@
         $('file-name').textContent = '';
         $('yt-url').value = '';
         $('lyrics-input').value = '';
-        $('word-timing').checked = true;
+        $('word-timing').checked = false;
         $('display-mode').value = 'subtitles';
         $('video-bg').value = 'color';
         $('cover-upload-row').style.display = 'none';
         $('cover-input').value = '';
         $('keep-chorus').checked = true;
+        $('review-toggle').checked = true;
         $('btn-go').disabled = false;
         $('form-card').style.display = '';
         $('progress-section').style.display = 'none';
@@ -1098,6 +1101,7 @@
             ${s.minus_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/minus" download>Minus</a>` : ''}
             ${s.ass_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/ass" download>Subs</a>` : ''}
             ${s.cdg_path ? `<a class="ci-btn" href="/api/jobs/${s.job_id}/download/cdg" download>CD+G</a>` : ''}
+            <button class="ci-btn ci-timing" onclick="openTimingFromCatalog('${s.job_id}')">&#9998; Timing</button>
             <button class="ci-btn ci-yt" onclick="prepareYouTube('${s.job_id}', this)">Prepare YT</button>
             <button class="ci-btn ci-del" onclick="deleteSong('${s.job_id}')">Del</button>
           </div>
@@ -1204,6 +1208,7 @@
   let reviewData = [];   // [{start, end, text, words:[...]}]
   let tapMode = false;
   let tapIndex = 0;
+  let reviewFromCatalog = false;
 
   async function showReview() {
     $('form-card').style.display = 'none';
@@ -1223,6 +1228,103 @@
     $('btn-tap').textContent = '⏱ Tap-sync: off';
     $('tap-hint').textContent = '';
     renderReviewLines();
+  }
+
+  async function openTimingFromCatalog(jobId) {
+    reviewFromCatalog = true;
+    currentJobId = jobId;
+    $('catalog-card').style.display = 'none';
+    $('nav-catalog').classList.add('active');
+    $('nav-create').classList.remove('active');
+    $('form-card').style.display = 'none';
+    $('progress-section').style.display = 'none';
+    $('review-section').style.display = '';
+    const audio = $('review-audio');
+    audio.src = `/api/jobs/${jobId}/audio`;
+    audio.ontimeupdate = () => { $('review-time').textContent = audio.currentTime.toFixed(2) + 's'; };
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/segments`);
+      if (!res.ok) {
+        reviewData = [];
+        $('review-lines').innerHTML = `
+          <div style="text-align:center;padding:1.5rem;">
+            <div style="color:var(--muted);margin-bottom:1rem;font-size:.9rem;">No timing data for this song — generate it now (uses existing audio, skips re-download &amp; separation).</div>
+            <div style="display:flex;gap:.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:.75rem;">
+              <select id="retrans-model" style="background:#0d0d1a;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:.35rem .6rem;font-size:.85rem;">
+                <option value="medium">medium</option>
+                <option value="large-v2">large-v2</option>
+                <option value="small">small</option>
+                <option value="tiny">tiny</option>
+              </select>
+              <select id="retrans-lang" style="background:#0d0d1a;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:.35rem .6rem;font-size:.85rem;">
+                <option value="auto">auto-detect</option>
+                <option value="be">Belarusian</option>
+                <option value="ru">Russian</option>
+                <option value="uk">Ukrainian</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+            <button class="btn-generate" id="btn-retranscribe" style="font-size:.9rem;padding:.5rem 1.5rem;">&#9889; Generate timing</button>
+          </div>`;
+        document.getElementById('btn-retranscribe').addEventListener('click', () => retranscribeFromCatalog(jobId));
+        tapMode = false; tapIndex = 0;
+        $('btn-tap').textContent = '⏱ Tap-sync: off';
+        $('tap-hint').textContent = '';
+        return;
+      }
+      const data = await res.json();
+      reviewData = (data.segments || []).map(s => ({
+        start: +s.start || 0, end: +s.end || 0, text: s.text || '', words: s.words || [],
+      }));
+    } catch (e) { reviewData = []; }
+    tapMode = false; tapIndex = 0;
+    $('btn-tap').textContent = '⏱ Tap-sync: off';
+    $('tap-hint').textContent = '';
+    renderReviewLines();
+  }
+
+  async function retranscribeFromCatalog(jobId) {
+    const model = (document.getElementById('retrans-model') || {}).value || 'medium';
+    const lang  = (document.getElementById('retrans-lang')  || {}).value || 'auto';
+    const btn = document.getElementById('btn-retranscribe');
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/retranscribe?model=${encodeURIComponent(model)}&language=${encodeURIComponent(lang)}`, { method: 'POST' });
+      if (!res.ok) {
+        if (btn) { btn.textContent = 'Failed'; btn.disabled = false; }
+        return;
+      }
+    } catch (e) {
+      if (btn) { btn.textContent = 'Failed'; btn.disabled = false; }
+      return;
+    }
+
+    $('review-lines').innerHTML = '<div style="text-align:center;padding:2rem;color:var(--muted);">Transcribing… this may take a minute.</div>';
+
+    const pollId = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        const job = await r.json();
+        if (job.status === 'review') {
+          clearInterval(pollId);
+          const segRes = await fetch(`/api/jobs/${jobId}/segments`);
+          const data = await segRes.json();
+          reviewData = (data.segments || []).map(s => ({
+            start: +s.start || 0, end: +s.end || 0, text: s.text || '', words: s.words || [],
+          }));
+          tapMode = false; tapIndex = 0;
+          $('btn-tap').textContent = '⏱ Tap-sync: off';
+          $('tap-hint').textContent = '';
+          renderReviewLines();
+        } else if (job.status === 'error') {
+          clearInterval(pollId);
+          $('review-lines').innerHTML = `<div style="color:var(--red);text-align:center;padding:1rem;">Failed: ${job.error || 'unknown error'}</div>`;
+        } else {
+          $('review-lines').innerHTML = `<div style="text-align:center;padding:2rem;color:var(--muted);">${job.step || 'Transcribing…'}</div>`;
+        }
+      } catch (e) {}
+    }, 2000);
   }
 
   function renderReviewLines() {
@@ -1334,7 +1436,17 @@
     $('btn-render').disabled = false;
   });
 
-  $('btn-review-reset').addEventListener('click', () => $('btn-reset').click());
+  $('btn-review-reset').addEventListener('click', () => {
+    if (reviewFromCatalog) {
+      reviewFromCatalog = false;
+      currentJobId = null;
+      try { $('review-audio').pause(); } catch (e) {}
+      $('review-section').style.display = 'none';
+      showView('catalog');
+    } else {
+      $('btn-reset').click();
+    }
+  });
 </script>
 </body>
 </html>

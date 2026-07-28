@@ -5,7 +5,7 @@ uvicorn[standard]>=0.32
 python-multipart>=0.0.12
 aiofiles>=24.1
 faster-whisper>=1.0
-yt-dlp>=2025.1
+yt-dlp>=2026.7.4  # needs --js-runtimes + --remote-components (EJS challenge solver)
 Pillow>=10.0
 # demucs requires PyTorch — install separately or via:
 #   pip install demucs

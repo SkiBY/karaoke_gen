@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 .venv/
+# yt-dlp cookies (auth secrets — never commit)
+*cookies*.txt
+yt_cookies*.txt
+# local docker env (host-specific paths)
+.env

@@ -12,7 +12,7 @@ Local web app that takes a music track (file upload or URL from YouTube, Spotify
 
 | Step | Tool |
 |---|---|
-| YouTube / SoundCloud / Yandex Music download | `yt-dlp` |
+| YouTube / SoundCloud / Yandex Music download | `yt-dlp` (Chromium cookies + EJS solver for geo-restricted content) |
 | Spotify download | `spotdl` (isolated via pipx) |
 | YouTube subtitle extraction | `yt-dlp --write-subs` |
 | Vocal separation | `demucs` (`htdemucs` model) |
@@ -36,12 +36,27 @@ WHISPER_DEVICE=cpu docker compose up --build
 # open http://localhost:8021
 ```
 
-Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) for GPU mode.
+Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) for GPU mode. The image bundles Node.js 20, which yt-dlp uses to solve YouTube's signature / n-param challenge — without it only image formats resolve and audio downloads fail.
+
+### YouTube cookies (geo-restricted / age-gated videos)
+
+Some videos only return usable formats to a logged-in session. Export your browser cookies to a file and point the container at it:
+
+```bash
+# Export once (re-run when cookies rotate)
+yt-dlp --cookies-from-browser chromium --cookies ~/.config/karaoke_yt_cookies.txt --skip-download <any-youtube-url>
+
+# Tell docker compose where the file is (e.g. in a .env next to compose)
+echo 'YTDLP_COOKIES_FILE=/home/you/.config/karaoke_yt_cookies.txt' >> .env
+docker compose up --build
+```
+
+The file is mounted read-write into the container (yt-dlp refreshes rotated cookies). If `YTDLP_COOKIES_FILE` is unset, the app runs without cookies — fine for most public videos.
 
 ## Quick start (local)
 
 ```bash
-sudo apt install ffmpeg fonts-liberation
+sudo apt install ffmpeg fonts-liberation nodejs
 python3 -m venv .venv && source .venv/bin/activate
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt
@@ -49,6 +64,8 @@ pip install -r requirements.txt
 pipx install spotdl
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+Running locally as your desktop user, yt-dlp reads cookies straight from your browser (`YTDLP_COOKIES_BROWSER=chromium` by default), so no export step is needed.
 
 ## Features
 
@@ -83,11 +100,12 @@ Lyrics are displayed in the results UI and can be **edited and re-submitted** �
 - **Character-weighted word distribution** — longer words get proportionally more time (not equal per word)
 - **Whisper-to-lyrics word alignment** — when both Whisper timestamps and lyrics exist, a greedy alignment transfers Whisper's timing to the correct lyric words
 - **LRC timestamp preservation** — synced lyrics timestamps used as line-level anchors
+- **Segment end-time capping** — each segment's display window is capped to the next segment's start, preventing Whisper's inflated end times from stacking multiple lines on screen simultaneously
 - **Minimum word duration** — 150ms floor to prevent flicker
 - **Gap threshold** — gaps under 100ms are absorbed into word duration
 
 ### Display modes
-- **Subtitles only** — word-by-word karaoke highlighting (default)
+- **Subtitles only** — karaoke highlighting (default). Word-by-word highlighting is an opt-in toggle (off by default — whole lines highlight at once unless enabled)
 - **Background text only** — full lyrics shown on screen, no timing (requires pasted lyrics)
 - **Both** — karaoke subtitles at bottom + full lyrics dimmed in the upper area
 
@@ -101,14 +119,20 @@ Lyrics are displayed in the results UI and can be **edited and re-submitted** �
 - Option to **keep** (default) or **remove** repeated chorus sections
 - When removed, only the first occurrence is kept
 
-### Interactive review (optional)
-Tick **"Review before rendering"** to pause the pipeline once the word-timed segments are ready — *before* the video is rendered — and open an in-browser editor:
+### Interactive review (on by default)
+**"Review before rendering"** (checked by default) pauses the pipeline once the word-timed segments are ready — *before* the video is rendered — and opens an in-browser editor:
 - **Fix wrong words** inline. If a line keeps the same word count (fixing one misheard word), the original per-word timing is preserved; otherwise the line's words are re-spread across its span.
 - **Adjust timing** by editing each line's start/end, or click **⇤** to set a line's start to the current playhead.
 - **Tap-sync**: play the instrumental and press <kbd>Space</kbd> (or click a line) as each line begins to capture its timing live.
+- **Insert lines** with the **＋** button between any two segments.
 - **Delete** junk lines.
 
 Hitting **Render** commits the edits and produces the video in seconds — it re-runs only the subtitle + ffmpeg step, **not** Demucs or Whisper. (The lyrics editor and rating auto-retry still re-run transcription, since their job is to re-time against changed text.)
+
+### Re-edit timing from catalog
+Every song in the catalog has a **✎ Timing** button that re-opens the review editor for that song at any time — no re-transcription needed.
+
+If the song was originally created without "Review before rendering" (no `segments.json` on disk), the editor shows a **⚡ Generate timing** panel with model and language pickers. Clicking it runs only the Whisper step on the already-separated audio (skips re-download and Demucs) and opens the editor as soon as transcription finishes.
 
 ### CD+G output (optional)
 Tick **"Also make CD+G"** on the create form to additionally produce a `.cdg` + `.mp3` bundle (downloaded as a ZIP with matching basenames — an MP3+G set). CD+G is the format real karaoke machines, hardware players, and desktop players (VLC, cdg players) understand. The generator renders the same word-timed data used for the ASS subtitles into a standards-compliant CD+G stream (50×18 grid of 6×12 tiles at 300 packets/sec) with a left-to-right character wipe as each word is sung.
@@ -116,6 +140,8 @@ Tick **"Also make CD+G"** on the create form to additionally produce a `.cdg` + 
 ### Song catalog
 - **Persistent SQLite database** — songs survive container restarts
 - **Catalog UI** — browse, search, download, delete past songs
+- **✎ Timing** — re-open the review editor for any song directly from the catalog
+- **⚡ Generate timing** — re-run Whisper on existing audio if segments were not saved (skips Demucs)
 - **Prepare for YouTube** — generates thumbnail (1280x720), metadata JSON (title, description, tags), and bundles everything into a ZIP
 
 ### Hallucination filtering
@@ -144,6 +170,9 @@ After results are ready, rate the output (1-5 stars) for text accuracy and video
 |---|---|---|
 | `WHISPER_DEVICE` | `cuda` | Whisper device (`cuda` or `cpu`) |
 | `GENIUS_ACCESS_TOKEN` | _(empty)_ | Optional Genius API token for lyrics fallback |
+| `YTDLP_COOKIES` | _(empty)_ | Path to a yt-dlp `cookies.txt`; used when present (portable, works as any user / in Docker) |
+| `YTDLP_COOKIES_BROWSER` | `chromium` | Browser to read cookies from when no cookies file is set; `none` disables cookies (Docker sets this) |
+| `YTDLP_COOKIES_FILE` | `/dev/null` | Compose-only: host path mounted into the container as the cookies file |
 
 ## Output format — ASS karaoke
 
