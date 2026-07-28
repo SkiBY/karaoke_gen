@@ -1360,7 +1360,8 @@
       row.querySelector('[data-act="add"]').addEventListener('click', () => {
         const cur = reviewData[i], next = reviewData[i + 1];
         const ns = cur.end;
-        const ne = (next && next.start > ns) ? next.start : ns + 2.0;
+        let ne = (next && next.start > ns) ? next.start : ns + 2.0;
+        if (ne <= ns) ne = ns + 2.0;   // never create a zero-length line
         reviewData.splice(i + 1, 0, { start: ns, end: ne, text: '', words: [] });
         if (tapIndex >= i + 1) tapIndex++;
         renderReviewLines();
@@ -1383,9 +1384,17 @@
     if (i == null) i = tapIndex;
     if (i >= reviewData.length) return;
     const t = +(+$('review-audio').currentTime).toFixed(2);
-    reviewData[i].start = t;
-    if (i > 0 && reviewData[i - 1].end < t) reviewData[i - 1].end = t;
-    if (reviewData[i].end <= t) reviewData[i].end = t + 1.0;
+    const cur = reviewData[i];
+    const prev = reviewData[i - 1];
+    const next = reviewData[i + 1];
+    cur.start = t;
+    // Close the previous line exactly where this one begins — contiguous timing,
+    // so each tap sets the previous line's end (not an arbitrary +1s guess).
+    if (prev && prev.start <= t) prev.end = t;
+    // This line ends where the next one starts; until the next line is tapped,
+    // use a short provisional span that the next tap will correct.
+    if (next && next.start > t) cur.end = next.start;
+    else if (cur.end <= t) cur.end = +(t + 2).toFixed(2);
     tapIndex = i + 1;
     renderReviewLines();
     const rows = $('review-lines').children;

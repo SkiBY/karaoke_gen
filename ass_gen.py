@@ -72,7 +72,12 @@ def _segment_to_dialogue(segment, word_timing: bool = True, effective_end: float
 
     words = segment.words or []
     if not words:
-        return ""
+        # Manually added / edited lines carry text but no per-word timing.
+        # Fall back to showing the whole line rather than dropping it.
+        text = segment.text.strip()
+        if not text:
+            return ""
+        return f"Dialogue: 0,{start},{end},Karaoke,,0,0,0,,{text}"
 
     MIN_WORD_CS = 15  # minimum 150ms per word to avoid flicker
     GAP_THRESHOLD = 0.10  # ignore gaps shorter than 100ms (measurement noise)
